@@ -2,6 +2,8 @@ package grpcclient
 
 import (
 	"flag"
+	"github.com/grafana/dskit/grpcencoding/s2"
+	"github.com/grafana/dskit/grpcencoding/zstd"
 	"time"
 
 	"github.com/pkg/errors"
@@ -57,7 +59,7 @@ func (cfg *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 
 	f.IntVar(&cfg.MaxRecvMsgSize, prefix+".grpc-max-recv-msg-size", 100<<20, "gRPC client max receive message size (bytes).")
 	f.IntVar(&cfg.MaxSendMsgSize, prefix+".grpc-max-send-msg-size", 100<<20, "gRPC client max send message size (bytes).")
-	f.StringVar(&cfg.GRPCCompression, prefix+".grpc-compression", "", "Use compression when sending messages. Supported values are: 'gzip', 'snappy' and '' (disable compression)")
+	f.StringVar(&cfg.GRPCCompression, prefix+".grpc-compression", "", "Use compression when sending messages. Supported values are: 'gzip', 'snappy', 's2', 'zstd' and '' (disable compression)")
 	f.Float64Var(&cfg.RateLimit, prefix+".grpc-client-rate-limit", 0., "Rate limit for gRPC client; 0 means disabled.")
 	f.IntVar(&cfg.RateLimitBurst, prefix+".grpc-client-rate-limit-burst", 0, "Rate limit burst for gRPC client.")
 	f.BoolVar(&cfg.BackoffOnRatelimits, prefix+".backoff-on-ratelimits", false, "Enable backoff and retry when we hit rate limits.")
@@ -75,7 +77,7 @@ func (cfg *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 
 func (cfg *Config) Validate() error {
 	switch cfg.GRPCCompression {
-	case gzip.Name, snappy.Name, "":
+	case gzip.Name, snappy.Name, s2.Name, zstd.Name, "":
 		// valid
 	default:
 		return errors.Errorf("unsupported compression type: %s", cfg.GRPCCompression)

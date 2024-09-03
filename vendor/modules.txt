@@ -601,7 +601,7 @@ github.com/grafana/alerting/receivers/webex
 github.com/grafana/alerting/receivers/webhook
 github.com/grafana/alerting/receivers/wecom
 github.com/grafana/alerting/templates
-# github.com/grafana/dskit v0.0.0-20240613131924-7e83c3cb3b11
+# github.com/grafana/dskit v0.0.0-20240613131924-7e83c3cb3b11 => github.com/deniszh/dskit v0.0.0-20240903191607-9332f1731a76
 ## explicit; go 1.20
 github.com/grafana/dskit/backoff
 github.com/grafana/dskit/ballast
@@ -615,7 +615,9 @@ github.com/grafana/dskit/dns/miekgdns
 github.com/grafana/dskit/flagext
 github.com/grafana/dskit/gate
 github.com/grafana/dskit/grpcclient
+github.com/grafana/dskit/grpcencoding/s2
 github.com/grafana/dskit/grpcencoding/snappy
+github.com/grafana/dskit/grpcencoding/zstd
 github.com/grafana/dskit/grpcutil
 github.com/grafana/dskit/httpgrpc
 github.com/grafana/dskit/httpgrpc/server
@@ -763,7 +765,7 @@ github.com/json-iterator/go
 # github.com/julienschmidt/httprouter v1.3.0
 ## explicit; go 1.7
 github.com/julienschmidt/httprouter
-# github.com/klauspost/compress v1.17.8
+# github.com/klauspost/compress v1.17.9
 ## explicit; go 1.20
 github.com/klauspost/compress
 github.com/klauspost/compress/flate
