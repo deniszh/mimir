@@ -39,7 +39,7 @@ require (
 	github.com/segmentio/fasthash v1.0.3
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/afero v1.11.0
-	github.com/stretchr/testify v1.8.4
+	github.com/stretchr/testify v1.9.0
 	github.com/uber/jaeger-client-go v2.30.0+incompatible
 	go.uber.org/atomic v1.11.0
 	go.uber.org/goleak v1.3.0
@@ -195,7 +195,7 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
-	github.com/klauspost/compress v1.17.7
+	github.com/klauspost/compress v1.17.9
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
@@ -226,7 +226,7 @@ require (
 	github.com/shurcooL/vfsgen v0.0.0-20200824052919-0d455de96546 // indirect
 	github.com/spf13/cobra v1.7.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/stretchr/objx v0.5.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/uber/jaeger-lib v2.4.1+incompatible // indirect
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.4 // indirect
@@ -281,3 +281,5 @@ replace github.com/opentracing-contrib/go-stdlib => github.com/grafana/opentraci
 
 // Replace opentracing-contrib/go-grpc with a fork until https://github.com/opentracing-contrib/go-grpc/pull/16 is merged.
 replace github.com/opentracing-contrib/go-grpc => github.com/charleskorn/go-grpc v0.0.0-20231024023642-e9298576254f
+
+replace github.com/grafana/dskit v0.0.0-20240229214108-b073df3747b2 => github.com/deniszh/dskit v0.0.0-20240905160007-969b3ab049b6
