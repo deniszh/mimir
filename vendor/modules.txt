@@ -538,7 +538,7 @@ github.com/gosimple/slug
 # github.com/grafana-tools/sdk v0.0.0-20220919052116-6562121319fc
 ## explicit; go 1.13
 github.com/grafana-tools/sdk
-# github.com/grafana/dskit v0.0.0-20240229214108-b073df3747b2
+# github.com/grafana/dskit v0.0.0-20240229214108-b073df3747b2 => github.com/deniszh/dskit v0.0.0-20240905160007-969b3ab049b6
 ## explicit; go 1.20
 github.com/grafana/dskit/backoff
 github.com/grafana/dskit/ballast
@@ -552,6 +552,7 @@ github.com/grafana/dskit/dns/miekgdns
 github.com/grafana/dskit/flagext
 github.com/grafana/dskit/gate
 github.com/grafana/dskit/grpcclient
+github.com/grafana/dskit/grpcencoding/s2
 github.com/grafana/dskit/grpcencoding/snappy
 github.com/grafana/dskit/grpcutil
 github.com/grafana/dskit/httpgrpc
@@ -703,7 +704,7 @@ github.com/json-iterator/go
 # github.com/julienschmidt/httprouter v1.3.0
 ## explicit; go 1.7
 github.com/julienschmidt/httprouter
-# github.com/klauspost/compress v1.17.7
+# github.com/klauspost/compress v1.17.9
 ## explicit; go 1.20
 github.com/klauspost/compress
 github.com/klauspost/compress/flate
@@ -1005,11 +1006,11 @@ github.com/spf13/cobra
 # github.com/spf13/pflag v1.0.5
 ## explicit; go 1.12
 github.com/spf13/pflag
-# github.com/stretchr/objx v0.5.0
-## explicit; go 1.12
-github.com/stretchr/objx
-# github.com/stretchr/testify v1.8.4
+# github.com/stretchr/objx v0.5.2
 ## explicit; go 1.20
+github.com/stretchr/objx
+# github.com/stretchr/testify v1.9.0
+## explicit; go 1.17
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/mock
 github.com/stretchr/testify/require
