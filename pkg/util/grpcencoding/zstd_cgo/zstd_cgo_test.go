@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-package zstd
+package zstd_cgo
 
 import (
 	"bytes"

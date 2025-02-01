@@ -43,7 +43,7 @@ import (
 	"github.com/grafana/mimir/pkg/scheduler/schedulerpb"
 	"github.com/grafana/mimir/pkg/util"
 	"github.com/grafana/mimir/pkg/util/grpcencoding/s2"
-	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd"
+	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd_cgo"
 	"github.com/grafana/mimir/pkg/util/httpgrpcutil"
 	"github.com/grafana/mimir/pkg/util/validation"
 )
@@ -110,7 +110,7 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	f.IntVar(&cfg.MaxOutstandingPerTenant, "query-scheduler.max-outstanding-requests-per-tenant", 100, "Maximum number of outstanding requests per tenant per query-scheduler. In-flight requests above this limit will fail with HTTP response status code 429.")
 	f.DurationVar(&cfg.QuerierForgetDelay, "query-scheduler.querier-forget-delay", 0, "If a querier disconnects without sending notification about graceful shutdown, the query-scheduler will keep the querier in the tenant's shard until the forget delay has passed. This feature is useful to reduce the blast radius when shuffle-sharding is enabled.")
 
-	cfg.GRPCClientConfig.CustomCompressors = []string{s2.Name, zstd.Name}
+	cfg.GRPCClientConfig.CustomCompressors = []string{s2.Name, zstd_cgo.Name}
 	cfg.GRPCClientConfig.RegisterFlagsWithPrefix("query-scheduler.grpc-client-config", f)
 	cfg.ServiceDiscovery.RegisterFlags(f, logger)
 }

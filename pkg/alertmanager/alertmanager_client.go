@@ -21,7 +21,7 @@ import (
 
 	"github.com/grafana/mimir/pkg/alertmanager/alertmanagerpb"
 	"github.com/grafana/mimir/pkg/util/grpcencoding/s2"
-	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd"
+	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd_cgo"
 )
 
 // ClientsPool is the interface used to get the client from the pool for a specified address.
@@ -47,7 +47,7 @@ type ClientConfig struct {
 
 // RegisterFlagsWithPrefix registers flags with prefix.
 func (cfg *ClientConfig) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
-	cfg.GRPCClientConfig.CustomCompressors = []string{s2.Name, zstd.Name}
+	cfg.GRPCClientConfig.CustomCompressors = []string{s2.Name, zstd_cgo.Name}
 	cfg.GRPCClientConfig.RegisterFlagsWithPrefix(prefix, f)
 	f.DurationVar(&cfg.RemoteTimeout, prefix+".remote-timeout", 2*time.Second, "Timeout for downstream alertmanagers.")
 }

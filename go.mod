@@ -83,6 +83,7 @@ require (
 	github.com/twmb/franz-go/pkg/kmsg v1.9.0
 	github.com/twmb/franz-go/plugin/kotel v1.5.0
 	github.com/twmb/franz-go/plugin/kprom v1.1.0
+	github.com/valyala/gozstd v1.21.2
 	github.com/xlab/treeprint v1.2.0
 	go.opentelemetry.io/collector/pdata v1.20.0
 	go.opentelemetry.io/otel v1.32.0

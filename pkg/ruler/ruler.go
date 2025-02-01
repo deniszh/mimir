@@ -42,7 +42,7 @@ import (
 	"github.com/grafana/mimir/pkg/ruler/rulestore"
 	"github.com/grafana/mimir/pkg/util"
 	"github.com/grafana/mimir/pkg/util/grpcencoding/s2"
-	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd"
+	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd_cgo"
 	util_log "github.com/grafana/mimir/pkg/util/log"
 	"github.com/grafana/mimir/pkg/util/spanlogger"
 	"github.com/grafana/mimir/pkg/util/validation"
@@ -170,7 +170,7 @@ func (cfg *Config) Validate(limits validation.Limits) error {
 
 // RegisterFlags adds the flags required to config this to the given FlagSet
 func (cfg *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
-	cfg.ClientTLSConfig.CustomCompressors = []string{s2.Name, zstd.Name}
+	cfg.ClientTLSConfig.CustomCompressors = []string{s2.Name, zstd_cgo.Name}
 	cfg.ClientTLSConfig.RegisterFlagsWithPrefix("ruler.client", f)
 	cfg.Ring.RegisterFlags(f, logger)
 	cfg.Notifier.RegisterFlags(f)

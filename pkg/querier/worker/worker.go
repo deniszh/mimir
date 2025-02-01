@@ -25,7 +25,7 @@ import (
 
 	"github.com/grafana/mimir/pkg/scheduler/schedulerdiscovery"
 	"github.com/grafana/mimir/pkg/util/grpcencoding/s2"
-	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd"
+	"github.com/grafana/mimir/pkg/util/grpcencoding/zstd_cgo"
 	"github.com/grafana/mimir/pkg/util/math"
 )
 
@@ -50,9 +50,9 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	f.StringVar(&cfg.QuerierID, "querier.id", "", "Querier ID, sent to the query-frontend to identify requests from the same querier. Defaults to hostname.")
 	f.BoolVar(&cfg.ResponseStreamingEnabled, "querier.response-streaming-enabled", false, "Enables streaming of responses from querier to query-frontend for response types that support it (currently only `active_series` responses do).")
 
-	cfg.QueryFrontendGRPCClientConfig.CustomCompressors = []string{s2.Name, zstd.Name}
+	cfg.QueryFrontendGRPCClientConfig.CustomCompressors = []string{s2.Name, zstd_cgo.Name}
 	cfg.QueryFrontendGRPCClientConfig.RegisterFlagsWithPrefix("querier.frontend-client", f)
-	cfg.QuerySchedulerGRPCClientConfig.CustomCompressors = []string{s2.Name, zstd.Name}
+	cfg.QuerySchedulerGRPCClientConfig.CustomCompressors = []string{s2.Name, zstd_cgo.Name}
 	cfg.QuerySchedulerGRPCClientConfig.RegisterFlagsWithPrefix("querier.scheduler-client", f)
 }
 
