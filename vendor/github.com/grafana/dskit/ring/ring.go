@@ -571,7 +571,8 @@ func (r *Ring) GetReplicationSetForOperation(op Operation) (ReplicationSet, erro
 		maxUnavailableZones = minSuccessZones - 1
 
 		if len(zoneFailures) > maxUnavailableZones {
-			return ReplicationSet{}, ErrTooManyUnhealthyInstances
+			level.Info(r.logger).Log("msg", "Ignoring ErrTooManyUnhealthyInstances")
+			//return ReplicationSet{}, ErrTooManyUnhealthyInstances
 		}
 
 		if len(zoneFailures) > 0 {
@@ -604,7 +605,8 @@ func (r *Ring) GetReplicationSetForOperation(op Operation) (ReplicationSet, erro
 		numRequired -= r.cfg.ReplicationFactor / 2
 
 		if len(healthyInstances) < numRequired {
-			return ReplicationSet{}, ErrTooManyUnhealthyInstances
+			level.Info(r.logger).Log("msg", "Ignoring ErrTooManyUnhealthyInstances")
+			//return ReplicationSet{}, ErrTooManyUnhealthyInstances
 		}
 
 		maxErrors = len(healthyInstances) - numRequired
