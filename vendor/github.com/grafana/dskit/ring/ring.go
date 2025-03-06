@@ -53,6 +53,11 @@ type ReadRing interface {
 	// the input operation.
 	GetReplicationSetForOperation(op Operation) (ReplicationSet, error)
 
+	// GetReplicationSetForOperationBestEffort
+	// Hack for GetReplicationSetForOperationBestEffort which will do best effort operation
+	// despite quorum errors
+	GetReplicationSetForOperationBestEffort(op Operation) (ReplicationSet, error)
+
 	ReplicationFactor() int
 
 	// InstancesCount returns the number of instances in the ring.
@@ -571,8 +576,7 @@ func (r *Ring) GetReplicationSetForOperation(op Operation) (ReplicationSet, erro
 		maxUnavailableZones = minSuccessZones - 1
 
 		if len(zoneFailures) > maxUnavailableZones {
-			level.Info(r.logger).Log("msg", "Ignoring ErrTooManyUnhealthyInstances")
-			//return ReplicationSet{}, ErrTooManyUnhealthyInstances
+			return ReplicationSet{}, ErrTooManyUnhealthyInstances
 		}
 
 		if len(zoneFailures) > 0 {
@@ -605,8 +609,70 @@ func (r *Ring) GetReplicationSetForOperation(op Operation) (ReplicationSet, erro
 		numRequired -= r.cfg.ReplicationFactor / 2
 
 		if len(healthyInstances) < numRequired {
+			return ReplicationSet{}, ErrTooManyUnhealthyInstances
+		}
+
+		maxErrors = len(healthyInstances) - numRequired
+	}
+
+	return ReplicationSet{
+		Instances:            healthyInstances,
+		MaxErrors:            maxErrors,
+		MaxUnavailableZones:  maxUnavailableZones,
+		ZoneAwarenessEnabled: r.cfg.ZoneAwarenessEnabled,
+	}, nil
+}
+
+// GetReplicationSetForOperationBestEffort implements ReadRing.
+func (r *Ring) GetReplicationSetForOperationBestEffort(op Operation) (ReplicationSet, error) {
+	r.mtx.RLock()
+	defer r.mtx.RUnlock()
+
+	if r.ringDesc == nil || len(r.ringTokens) == 0 {
+		return ReplicationSet{}, ErrEmptyRing
+	}
+
+	// Build the initial replication set, excluding unhealthy instances.
+	healthyInstances := make([]InstanceDesc, 0, len(r.ringDesc.Ingesters))
+	zoneFailures := make(map[string]struct{})
+	now := time.Now()
+
+	for _, instance := range r.ringDesc.Ingesters {
+		if r.IsHealthy(&instance, op, now) {
+			healthyInstances = append(healthyInstances, instance)
+		} else {
+			zoneFailures[instance.Zone] = struct{}{}
+		}
+	}
+
+	// Max errors and max unavailable zones are mutually exclusive. We initialise both
+	// to 0 and then we update them whether zone-awareness is enabled or not.
+	maxErrors := 0
+	maxUnavailableZones := 0
+
+	if r.cfg.ZoneAwarenessEnabled {
+		// Given data is replicated to RF different zones, we can tolerate a number of
+		// RF/2 failing zones. However, we need to protect from the case the ring currently
+		// contains instances in a number of zones < RF.
+		numReplicatedZones := min(len(r.ringZones), r.cfg.ReplicationFactor)
+		minSuccessZones := (numReplicatedZones / 2) + 1
+		maxUnavailableZones = minSuccessZones - 1
+
+		if len(zoneFailures) > maxUnavailableZones {
+			level.Info(r.logger).Log("msg", "ZoneAwareness: Ignoring ErrTooManyUnhealthyInstances")
+		}
+	} else {
+		// Calculate the number of required instances;
+		// ensure we always require at least RF-1 when RF=3.
+		numRequired := len(r.ringDesc.Ingesters)
+		if numRequired < r.cfg.ReplicationFactor {
+			numRequired = r.cfg.ReplicationFactor
+		}
+		// We can tolerate this many failures
+		numRequired -= r.cfg.ReplicationFactor / 2
+
+		if len(healthyInstances) < numRequired {
 			level.Info(r.logger).Log("msg", "Ignoring ErrTooManyUnhealthyInstances")
-			//return ReplicationSet{}, ErrTooManyUnhealthyInstances
 		}
 
 		maxErrors = len(healthyInstances) - numRequired

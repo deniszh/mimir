@@ -325,4 +325,4 @@ replace github.com/twmb/franz-go => github.com/grafana/franz-go v0.0.0-202410091
 replace google.golang.org/grpc => google.golang.org/grpc v1.65.0
 
 // hacked dskit for AP experiments
-replace github.com/grafana/dskit => github.com/deniszh/dskit v0.0.0-20250305211709-65a69e66d7d2
+replace github.com/grafana/dskit => github.com/deniszh/dskit v0.0.0-20250306081150-d7902938bae6

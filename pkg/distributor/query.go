@@ -139,7 +139,7 @@ func (d *Distributor) getIngesterReplicationSetsForQuery(ctx context.Context) ([
 	r := d.ingestersRing
 	r = r.ShuffleShardWithLookback(userID, shardSize, d.cfg.ShuffleShardingLookbackPeriod, time.Now())
 
-	replicationSet, err := r.GetReplicationSetForOperation(readNoExtend)
+	replicationSet, err := r.GetReplicationSetForOperationBestEffort(readNoExtend)
 	if err != nil {
 		return nil, err
 	}
