@@ -2,7 +2,7 @@
 // Provenance-includes-license: Apache-2.0
 // Provenance-includes-copyright: Copyright 2022 Mostyn Bramley-Moore.
 
-// Package zstd is a wrapper for using github.com/klauspost/compress/zstd
+// Package zstd is a wrapper for using https://github.com/valyala/gozstd
 // with gRPC.
 package zstd
 
@@ -11,7 +11,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/klauspost/compress/zstd"
+	"github.com/valyala/gozstd"
 	"google.golang.org/grpc/encoding"
 )
 
@@ -20,20 +20,6 @@ const (
 	Name = "zstd"
 )
 
-var encoderOptions = []zstd.EOption{
-	// The default zstd window size is 8MB, which is much larger than the
-	// typical RPC message and wastes a bunch of memory.
-	zstd.WithWindowSize(512 * 1024),
-	// The default zstd compression level is 2
-	zstd.WithEncoderLevel(zstd.SpeedDefault),
-}
-var decoderOptions = []zstd.DOption{
-	// If the decoder concurrency level is not 1, we would need to call
-	// Close() to avoid leaking resources when the object is released
-	// from compressor.decoderPool.
-	zstd.WithDecoderConcurrency(1),
-}
-
 type compressor struct {
 	name             string
 	poolCompressor   sync.Pool
@@ -41,12 +27,12 @@ type compressor struct {
 }
 
 type writer struct {
-	*zstd.Encoder
+	*gozstd.Writer
 	pool *sync.Pool
 }
 
 type reader struct {
-	*zstd.Decoder
+	*gozstd.Reader
 	pool *sync.Pool
 }
 
@@ -59,32 +45,26 @@ func newCompressor() *compressor {
 		name: Name,
 	}
 	c.poolCompressor.New = func() interface{} {
-		w, err := zstd.NewWriter(io.Discard, encoderOptions...)
-		if err != nil {
-			return nil
-		}
-		return &writer{Encoder: w, pool: &c.poolCompressor}
+		w := gozstd.NewWriter(io.Discard)
+		return &writer{Writer: w, pool: &c.poolCompressor}
 	}
 	return c
 }
 
 func (c *compressor) Compress(w io.Writer) (io.WriteCloser, error) {
 	s := c.poolCompressor.Get().(*writer)
-	s.Encoder.Reset(w)
+	s.Writer.Reset(w, nil, 0)
 	return s, nil
 }
 
 func (c *compressor) Decompress(r io.Reader) (io.Reader, error) {
 	s, inPool := c.poolDecompressor.Get().(*reader)
 	if !inPool {
-		newR, err := zstd.NewReader(r, decoderOptions...)
-		if err != nil {
-			return nil, err
-		}
-		return &reader{Decoder: newR, pool: &c.poolDecompressor}, nil
+		newR := gozstd.NewReader(r)
+		return &reader{Reader: newR, pool: &c.poolDecompressor}, nil
 	}
-	err := s.Reset(r)
-	return s, err
+	s.Reset(r, nil)
+	return s, nil
 }
 
 func (c *compressor) Name() string {
@@ -92,13 +72,13 @@ func (c *compressor) Name() string {
 }
 
 func (s *writer) Close() error {
-	err := s.Encoder.Close()
+	err := s.Writer.Close()
 	s.pool.Put(s)
 	return err
 }
 
 func (s *reader) Read(p []byte) (n int, err error) {
-	n, err = s.Decoder.Read(p)
+	n, err = s.Reader.Read(p)
 	if errors.Is(err, io.EOF) {
 		s.pool.Put(s)
 	}
