@@ -16,7 +16,6 @@ package chunks
 import (
 	"bufio"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"hash"
 	"hash/crc32"
@@ -134,6 +133,15 @@ type Meta struct {
 	// Time range the data covers.
 	// When MaxTime == math.MaxInt64 the chunk is still open and being appended to.
 	MinTime, MaxTime int64
+
+	// OOOLastRef, OOOLastMinTime and OOOLastMaxTime are kept as markers for
+	// overlapping chunks.
+	// These fields point to the last created out of order Chunk (the head) that existed
+	// when Series() was called and was overlapping.
+	// Series() and Chunk() method responses should be consistent for the same
+	// query even if new data is added in between the calls.
+	OOOLastRef                     ChunkRef
+	OOOLastMinTime, OOOLastMaxTime int64
 }
 
 // ChunkFromSamples requires all samples to have the same type.
@@ -173,7 +181,7 @@ func ChunkFromSamplesGeneric(s Samples) (Meta, error) {
 				return emptyChunk, err
 			}
 			if newChunk != nil {
-				return emptyChunk, errors.New("did not expect to start a second chunk")
+				return emptyChunk, fmt.Errorf("did not expect to start a second chunk")
 			}
 		case chunkenc.ValFloatHistogram:
 			newChunk, _, ca, err = ca.AppendFloatHistogram(nil, s.Get(i).T(), s.Get(i).FH(), false)
@@ -181,7 +189,7 @@ func ChunkFromSamplesGeneric(s Samples) (Meta, error) {
 				return emptyChunk, err
 			}
 			if newChunk != nil {
-				return emptyChunk, errors.New("did not expect to start a second chunk")
+				return emptyChunk, fmt.Errorf("did not expect to start a second chunk")
 			}
 		default:
 			panic(fmt.Sprintf("unknown sample type %s", sampleType.String()))
@@ -251,7 +259,7 @@ func (cm *Meta) OverlapsClosedInterval(mint, maxt int64) bool {
 	return cm.MinTime <= maxt && mint <= cm.MaxTime
 }
 
-var errInvalidSize = errors.New("invalid size")
+var errInvalidSize = fmt.Errorf("invalid size")
 
 var castagnoliTable *crc32.Table
 

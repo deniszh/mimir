@@ -35,7 +35,6 @@ import (
 	"github.com/prometheus/prometheus/tsdb/encoding"
 	tsdb_errors "github.com/prometheus/prometheus/tsdb/errors"
 	"github.com/prometheus/prometheus/tsdb/fileutil"
-	"github.com/prometheus/prometheus/tsdb/hashcache"
 )
 
 const (
@@ -44,12 +43,10 @@ const (
 	// HeaderLen represents number of bytes reserved of index for header.
 	HeaderLen = 5
 
-	// FormatV1 represents version 1 of index.
+	// FormatV1 represents 1 version of index.
 	FormatV1 = 1
-	// FormatV2 represents version 2 of index.
+	// FormatV2 represents 2 version of index.
 	FormatV2 = 2
-	// FormatV3 represents version 3 of index.
-	FormatV3 = 3
 
 	indexFilename = "index"
 
@@ -118,8 +115,6 @@ type symbolCacheEntry struct {
 }
 
 type PostingsEncoder func(*encoding.Encbuf, []uint32) error
-
-type PostingsDecoder func(encoding.Decbuf) (int, Postings, error)
 
 // Writer implements the IndexWriter interface for the standard
 // serialization format.
@@ -201,9 +196,8 @@ func NewTOCFromByteSlice(bs ByteSlice) (*TOC, error) {
 	return toc, d.Err()
 }
 
-// NewWriterWithEncoder returns a new Writer to the given filename. It
-// serializes data in format version 2. It uses the given encoder to encode each
-// postings list.
+// NewWriter returns a new Writer to the given filename. It serializes data in format version 2.
+// It uses the given encoder to encode each postings list.
 func NewWriterWithEncoder(ctx context.Context, fn string, encoder PostingsEncoder) (*Writer, error) {
 	dir := filepath.Dir(fn)
 
@@ -441,7 +435,7 @@ func (w *Writer) AddSeries(ref storage.SeriesRef, lset labels.Labels, chunks ...
 		return err
 	}
 	if labels.Compare(lset, w.lastSeries) <= 0 {
-		return fmt.Errorf("out-of-order series added with label set %q, last label set %q", lset, w.lastSeries)
+		return fmt.Errorf("out-of-order series added with label set %q", lset)
 	}
 
 	if ref < w.lastSeriesRef && !w.lastSeries.IsEmpty() {
@@ -1110,10 +1104,6 @@ type StringIter interface {
 	Err() error
 }
 
-type ReaderCacheProvider interface {
-	SeriesHashCache() *hashcache.BlockSeriesHashCache
-}
-
 type Reader struct {
 	b   ByteSlice
 	toc *TOC
@@ -1135,9 +1125,6 @@ type Reader struct {
 	dec *Decoder
 
 	version int
-
-	// Provides a cache mapping series labels hash by series ID.
-	cacheProvider ReaderCacheProvider
 }
 
 type postingOffset struct {
@@ -1167,27 +1154,17 @@ func (b realByteSlice) Sub(start, end int) ByteSlice {
 
 // NewReader returns a new index reader on the given byte slice. It automatically
 // handles different format versions.
-func NewReader(b ByteSlice, decoder PostingsDecoder) (*Reader, error) {
-	return newReader(b, io.NopCloser(nil), decoder, nil)
-}
-
-// NewReaderWithCache is like NewReader but allows to pass a cache provider.
-func NewReaderWithCache(b ByteSlice, decoder PostingsDecoder, cacheProvider ReaderCacheProvider) (*Reader, error) {
-	return newReader(b, io.NopCloser(nil), decoder, cacheProvider)
+func NewReader(b ByteSlice) (*Reader, error) {
+	return newReader(b, io.NopCloser(nil))
 }
 
 // NewFileReader returns a new index reader against the given index file.
-func NewFileReader(path string, decoder PostingsDecoder) (*Reader, error) {
-	return NewFileReaderWithOptions(path, decoder, nil)
-}
-
-// NewFileReaderWithOptions is like NewFileReader but allows to pass a cache provider.
-func NewFileReaderWithOptions(path string, decoder PostingsDecoder, cacheProvider ReaderCacheProvider) (*Reader, error) {
+func NewFileReader(path string) (*Reader, error) {
 	f, err := fileutil.OpenMmapFile(path)
 	if err != nil {
 		return nil, err
 	}
-	r, err := newReader(realByteSlice(f.Bytes()), f, decoder, cacheProvider)
+	r, err := newReader(realByteSlice(f.Bytes()), f)
 	if err != nil {
 		return nil, tsdb_errors.NewMulti(
 			err,
@@ -1198,13 +1175,12 @@ func NewFileReaderWithOptions(path string, decoder PostingsDecoder, cacheProvide
 	return r, nil
 }
 
-func newReader(b ByteSlice, c io.Closer, postingsDecoder PostingsDecoder, cacheProvider ReaderCacheProvider) (*Reader, error) {
+func newReader(b ByteSlice, c io.Closer) (*Reader, error) {
 	r := &Reader{
-		b:             b,
-		c:             c,
-		postings:      map[string][]postingOffset{},
-		cacheProvider: cacheProvider,
-		st:            labels.NewSymbolTable(),
+		b:        b,
+		c:        c,
+		postings: map[string][]postingOffset{},
+		st:       labels.NewSymbolTable(),
 	}
 
 	// Verify header.
@@ -1216,9 +1192,7 @@ func newReader(b ByteSlice, c io.Closer, postingsDecoder PostingsDecoder, cacheP
 	}
 	r.version = int(r.b.Range(4, 5)[0])
 
-	switch r.version {
-	case FormatV1, FormatV2, FormatV3:
-	default:
+	if r.version != FormatV1 && r.version != FormatV2 {
 		return nil, fmt.Errorf("unknown index file version %d", r.version)
 	}
 
@@ -1298,7 +1272,7 @@ func newReader(b ByteSlice, c io.Closer, postingsDecoder PostingsDecoder, cacheP
 		r.nameSymbols[off] = k
 	}
 
-	r.dec = &Decoder{LookupSymbol: r.lookupSymbol, DecodePostings: postingsDecoder}
+	r.dec = &Decoder{LookupSymbol: r.lookupSymbol}
 
 	return r, nil
 }
@@ -1376,9 +1350,7 @@ func (s Symbols) Lookup(o uint32) (string, error) {
 		B: s.bs.Range(0, s.bs.Len()),
 	}
 
-	if s.version == FormatV1 {
-		d.Skip(int(o))
-	} else {
+	if s.version == FormatV2 {
 		if int(o) >= s.seen {
 			return "", fmt.Errorf("unknown symbol offset %d", o)
 		}
@@ -1387,6 +1359,8 @@ func (s Symbols) Lookup(o uint32) (string, error) {
 		for i := o - (o / symbolFactor * symbolFactor); i > 0; i-- {
 			d.UvarintBytes()
 		}
+	} else {
+		d.Skip(int(o))
 	}
 	sym := d.UvarintStr()
 	if d.Err() != nil {
@@ -1432,10 +1406,10 @@ func (s Symbols) ReverseLookup(sym string) (uint32, error) {
 	if lastSymbol != sym {
 		return 0, fmt.Errorf("unknown symbol %q", sym)
 	}
-	if s.version == FormatV1 {
-		return uint32(s.bs.Len() - lastLen), nil
+	if s.version == FormatV2 {
+		return uint32(res), nil
 	}
-	return uint32(res), nil
+	return uint32(s.bs.Len() - lastLen), nil
 }
 
 func (s Symbols) Size() int {
@@ -1577,24 +1551,18 @@ func (r *Reader) LabelValues(ctx context.Context, name string, matchers ...*labe
 
 // LabelNamesFor returns all the label names for the series referred to by IDs.
 // The names returned are sorted.
-func (r *Reader) LabelNamesFor(ctx context.Context, postings Postings) ([]string, error) {
+func (r *Reader) LabelNamesFor(ctx context.Context, ids ...storage.SeriesRef) ([]string, error) {
 	// Gather offsetsMap the name offsetsMap in the symbol table first
 	offsetsMap := make(map[uint32]struct{})
-	i := 0
-	for postings.Next() {
-		id := postings.At()
-		i++
-
-		if i%checkContextEveryNIterations == 0 {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
-			}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 
 		offset := id
 		// In version 2 series IDs are no longer exact references but series are 16-byte padded
 		// and the ID is the multiple of 16 of the actual position.
-		if r.version != FormatV1 {
+		if r.version == FormatV2 {
 			offset = id * seriesByteAlign
 		}
 
@@ -1633,7 +1601,7 @@ func (r *Reader) LabelValueFor(ctx context.Context, id storage.SeriesRef, label 
 	offset := id
 	// In version 2 series IDs are no longer exact references but series are 16-byte padded
 	// and the ID is the multiple of 16 of the actual position.
-	if r.version != FormatV1 {
+	if r.version == FormatV2 {
 		offset = id * seriesByteAlign
 	}
 	d := encoding.NewDecbufUvarintAt(r.b, int(offset), castagnoliTable)
@@ -1659,7 +1627,7 @@ func (r *Reader) Series(id storage.SeriesRef, builder *labels.ScratchBuilder, ch
 	offset := id
 	// In version 2 series IDs are no longer exact references but series are 16-byte padded
 	// and the ID is the multiple of 16 of the actual position.
-	if r.version != FormatV1 {
+	if r.version == FormatV2 {
 		offset = id * seriesByteAlign
 	}
 	d := encoding.NewDecbufUvarintAt(r.b, int(offset), castagnoliTable)
@@ -1727,7 +1695,7 @@ func (r *Reader) Postings(ctx context.Context, name string, values ...string) (P
 			}
 			// Read from the postings table.
 			d := encoding.NewDecbufAt(r.b, int(postingsOff), castagnoliTable)
-			_, p, err := r.dec.DecodePostings(d)
+			_, p, err := r.dec.Postings(d.Get())
 			if err != nil {
 				return nil, fmt.Errorf("decode postings: %w", err)
 			}
@@ -1770,7 +1738,7 @@ func (r *Reader) Postings(ctx context.Context, name string, values ...string) (P
 				if val == value {
 					// Read from the postings table.
 					d2 := encoding.NewDecbufAt(r.b, int(postingsOff), castagnoliTable)
-					_, p, err := r.dec.DecodePostings(d2)
+					_, p, err := r.dec.Postings(d2.Get())
 					if err != nil {
 						return false, fmt.Errorf("decode postings: %w", err)
 					}
@@ -1796,15 +1764,6 @@ func (r *Reader) Postings(ctx context.Context, name string, values ...string) (P
 }
 
 func (r *Reader) PostingsForLabelMatching(ctx context.Context, name string, match func(string) bool) Postings {
-	return r.postingsForLabelMatching(ctx, name, match)
-}
-
-func (r *Reader) PostingsForAllLabelValues(ctx context.Context, name string) Postings {
-	return r.postingsForLabelMatching(ctx, name, nil)
-}
-
-// postingsForLabelMatching implements PostingsForLabelMatching if match is non-nil, and PostingsForAllLabelValues otherwise.
-func (r *Reader) postingsForLabelMatching(ctx context.Context, name string, match func(string) bool) Postings {
 	if r.version == FormatV1 {
 		return r.postingsForLabelMatchingV1(ctx, name, match)
 	}
@@ -1814,19 +1773,13 @@ func (r *Reader) postingsForLabelMatching(ctx context.Context, name string, matc
 		return EmptyPostings()
 	}
 
-	postingsEstimate := 0
-	if match == nil {
-		// The caller wants all postings for name.
-		postingsEstimate = len(e) * symbolFactor
-	}
-
 	lastVal := e[len(e)-1].value
-	its := make([]Postings, 0, postingsEstimate)
+	var its []Postings
 	if err := r.traversePostingOffsets(ctx, e[0].off, func(val string, postingsOff uint64) (bool, error) {
-		if match == nil || match(val) {
-			// We want this postings iterator since the value is a match.
+		if match(val) {
+			// We want this postings iterator since the value is a match
 			postingsDec := encoding.NewDecbufAt(r.b, int(postingsOff), castagnoliTable)
-			_, p, err := r.dec.DecodePostings(postingsDec)
+			_, p, err := r.dec.PostingsFromDecbuf(postingsDec)
 			if err != nil {
 				return false, fmt.Errorf("decode postings: %w", err)
 			}
@@ -1853,13 +1806,13 @@ func (r *Reader) postingsForLabelMatchingV1(ctx context.Context, name string, ma
 			return ErrPostings(ctx.Err())
 		}
 		count++
-		if match != nil && !match(val) {
+		if !match(val) {
 			continue
 		}
 
 		// Read from the postings table.
 		d := encoding.NewDecbufAt(r.b, int(offset), castagnoliTable)
-		_, p, err := r.dec.DecodePostings(d)
+		_, p, err := r.dec.PostingsFromDecbuf(d)
 		if err != nil {
 			return ErrPostings(fmt.Errorf("decode postings: %w", err))
 		}
@@ -1883,41 +1836,17 @@ func (r *Reader) ShardedPostings(p Postings, shardIndex, shardCount uint64) Post
 		bufLbls = labels.ScratchBuilder{}
 	)
 
-	// Request the cache each time because the cache implementation requires
-	// that the cache reference is retained for a short period.
-	var seriesHashCache *hashcache.BlockSeriesHashCache
-	if r.cacheProvider != nil {
-		seriesHashCache = r.cacheProvider.SeriesHashCache()
-	}
-
 	for p.Next() {
 		id := p.At()
 
-		var (
-			hash uint64
-			ok   bool
-		)
-
-		// Check if the hash is cached.
-		if seriesHashCache != nil {
-			hash, ok = seriesHashCache.Fetch(id)
-		}
-
-		if !ok {
-			// Get the series labels (no chunks).
-			err := r.Series(id, &bufLbls, nil)
-			if err != nil {
-				return ErrPostings(fmt.Errorf("series %d not found", id))
-			}
-
-			hash = labels.StableHash(bufLbls.Labels())
-			if seriesHashCache != nil {
-				seriesHashCache.Store(id, hash)
-			}
+		// Get the series labels (no chunks).
+		err := r.Series(id, &bufLbls, nil)
+		if err != nil {
+			return ErrPostings(fmt.Errorf("series %d not found", id))
 		}
 
 		// Check if the series belong to the shard.
-		if hash%shardCount != shardIndex {
+		if labels.StableHash(bufLbls.Labels())%shardCount != shardIndex {
 			continue
 		}
 
@@ -1978,12 +1907,17 @@ func (s stringListIter) Err() error { return nil }
 // It currently does not contain decoding methods for all entry types but can be extended
 // by them if there's demand.
 type Decoder struct {
-	LookupSymbol   func(context.Context, uint32) (string, error)
-	DecodePostings PostingsDecoder
+	LookupSymbol func(context.Context, uint32) (string, error)
 }
 
-// DecodePostingsRaw returns a postings list for d and its number of elements.
-func DecodePostingsRaw(d encoding.Decbuf) (int, Postings, error) {
+// Postings returns a postings list for b and its number of elements.
+func (dec *Decoder) Postings(b []byte) (int, Postings, error) {
+	d := encoding.Decbuf{B: b}
+	return dec.PostingsFromDecbuf(d)
+}
+
+// PostingsFromDecbuf returns a postings list for d and its number of elements.
+func (dec *Decoder) PostingsFromDecbuf(d encoding.Decbuf) (int, Postings, error) {
 	n := d.Be32int()
 	l := d.Get()
 	if d.Err() != nil {
@@ -2122,5 +2056,5 @@ func (dec *Decoder) Series(b []byte, builder *labels.ScratchBuilder, chks *[]chu
 }
 
 func yoloString(b []byte) string {
-	return unsafe.String(unsafe.SliceData(b), len(b))
+	return *((*string)(unsafe.Pointer(&b)))
 }

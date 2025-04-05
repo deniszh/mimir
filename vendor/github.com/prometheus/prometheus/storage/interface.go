@@ -41,17 +41,15 @@ var (
 	ErrOutOfOrderExemplar          = errors.New("out of order exemplar")
 	ErrDuplicateExemplar           = errors.New("duplicate exemplar")
 	ErrExemplarLabelLength         = fmt.Errorf("label length for exemplar exceeds maximum of %d UTF-8 characters", exemplar.ExemplarMaxLabelSetLength)
-	ErrExemplarsDisabled           = errors.New("exemplar storage is disabled or max exemplars is less than or equal to 0")
-	ErrNativeHistogramsDisabled    = errors.New("native histograms are disabled")
-	ErrOOONativeHistogramsDisabled = errors.New("out-of-order native histogram ingestion is disabled")
+	ErrExemplarsDisabled           = fmt.Errorf("exemplar storage is disabled or max exemplars is less than or equal to 0")
+	ErrNativeHistogramsDisabled    = fmt.Errorf("native histograms are disabled")
 
 	// ErrOutOfOrderCT indicates failed append of CT to the storage
 	// due to CT being older the then newer sample.
 	// NOTE(bwplotka): This can be both an instrumentation failure or commonly expected
 	// behaviour, and we currently don't have a way to determine this. As a result
 	// it's recommended to ignore this error for now.
-	ErrOutOfOrderCT      = errors.New("created timestamp out of order, ignoring")
-	ErrCTNewerThanSample = errors.New("CT is newer or the same as sample's timestamp, ignoring")
+	ErrOutOfOrderCT = fmt.Errorf("created timestamp out of order, ignoring")
 )
 
 // SeriesRef is a generic series reference. In prometheus it is either a
@@ -114,8 +112,6 @@ type Querier interface {
 	LabelQuerier
 
 	// Select returns a set of series that matches the given label matchers.
-	// Results are not checked whether they match. Results that do not match
-	// may cause undefined behavior.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.
 	// It allows passing hints that can help in optimising select, but it's up to implementation how this is used if used at all.
 	Select(ctx context.Context, sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) SeriesSet
@@ -126,11 +122,11 @@ type MockQuerier struct {
 	SelectMockFunction func(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) SeriesSet
 }
 
-func (q *MockQuerier) LabelValues(context.Context, string, *LabelHints, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+func (q *MockQuerier) LabelValues(context.Context, string, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	return nil, nil, nil
 }
 
-func (q *MockQuerier) LabelNames(context.Context, *LabelHints, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+func (q *MockQuerier) LabelNames(context.Context, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	return nil, nil, nil
 }
 
@@ -154,8 +150,6 @@ type ChunkQuerier interface {
 	LabelQuerier
 
 	// Select returns a set of series that matches the given label matchers.
-	// Results are not checked whether they match. Results that do not match
-	// may cause undefined behavior.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.
 	// It allows passing hints that can help in optimising select, but it's up to implementation how this is used if used at all.
 	Select(ctx context.Context, sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) ChunkSeriesSet
@@ -163,16 +157,16 @@ type ChunkQuerier interface {
 
 // LabelQuerier provides querying access over labels.
 type LabelQuerier interface {
-	// LabelValues returns all potential values for a label name in sorted order.
+	// LabelValues returns all potential values for a label name.
 	// It is not safe to use the strings beyond the lifetime of the querier.
 	// If matchers are specified the returned result set is reduced
 	// to label values of metrics matching the matchers.
-	LabelValues(ctx context.Context, name string, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
+	LabelValues(ctx context.Context, name string, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
 
 	// LabelNames returns all the unique label names present in the block in sorted order.
 	// If matchers are specified the returned result set is reduced
 	// to label names of metrics matching the matchers.
-	LabelNames(ctx context.Context, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
+	LabelNames(ctx context.Context, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
 
 	// Close releases the resources of the Querier.
 	Close() error
@@ -195,9 +189,6 @@ type ExemplarQuerier interface {
 type SelectHints struct {
 	Start int64 // Start time in milliseconds for this select.
 	End   int64 // End time in milliseconds for this select.
-
-	// Maximum number of results returned. Use a value of 0 to disable.
-	Limit int
 
 	Step int64  // Query step size in milliseconds.
 	Func string // String representation of surrounding function or aggregation.
@@ -226,25 +217,14 @@ type SelectHints struct {
 	DisableTrimming bool
 }
 
-// LabelHints specifies hints passed for label reads.
-// This is used only as an option for implementation to use.
-type LabelHints struct {
-	// Maximum number of results returned. Use a value of 0 to disable.
-	Limit int
-}
-
+// TODO(bwplotka): Move to promql/engine_test.go?
 // QueryableFunc is an adapter to allow the use of ordinary functions as
 // Queryables. It follows the idea of http.HandlerFunc.
-// TODO(bwplotka): Move to promql/engine_test.go?
 type QueryableFunc func(mint, maxt int64) (Querier, error)
 
 // Querier calls f() with the given parameters.
 func (f QueryableFunc) Querier(mint, maxt int64) (Querier, error) {
 	return f(mint, maxt)
-}
-
-type AppendOptions struct {
-	DiscardOutOfOrder bool
 }
 
 // Appender provides batched appends against a storage.
@@ -274,10 +254,6 @@ type Appender interface {
 	// Rollback rolls back all modifications made in the appender so far.
 	// Appender has to be discarded after rollback.
 	Rollback() error
-
-	// SetOptions configures the appender with specific append options such as
-	// discarding out-of-order samples even if out-of-order is enabled in the TSDB.
-	SetOptions(opts *AppendOptions)
 
 	ExemplarAppender
 	HistogramAppender
@@ -326,20 +302,6 @@ type HistogramAppender interface {
 	// pointer. AppendHistogram won't mutate the histogram, but in turn
 	// depends on the caller to not mutate it either.
 	AppendHistogram(ref SeriesRef, l labels.Labels, t int64, h *histogram.Histogram, fh *histogram.FloatHistogram) (SeriesRef, error)
-	// AppendHistogramCTZeroSample adds synthetic zero sample for the given ct timestamp,
-	// which will be associated with given series, labels and the incoming
-	// sample's t (timestamp). AppendHistogramCTZeroSample returns error if zero sample can't be
-	// appended, for example when ct is too old, or when it would collide with
-	// incoming sample (sample has priority).
-	//
-	// AppendHistogramCTZeroSample has to be called before the corresponding histogram AppendHistogram.
-	// A series reference number is returned which can be used to modify the
-	// CT for the given series in the same or later transactions.
-	// Returned reference numbers are ephemeral and may be rejected in calls
-	// to AppendHistogramCTZeroSample() at any point.
-	//
-	// If the reference is 0 it must not be used for caching.
-	AppendHistogramCTZeroSample(ref SeriesRef, l labels.Labels, t, ct int64, h *histogram.Histogram, fh *histogram.FloatHistogram) (SeriesRef, error)
 }
 
 // MetadataUpdater provides an interface for associating metadata to stored series.
@@ -487,12 +449,6 @@ type ChunkSeriesSet interface {
 type ChunkSeries interface {
 	Labels
 	ChunkIterable
-
-	// ChunkCount returns the number of chunks available from this ChunkSeries.
-	//
-	// This value is used by Mimir's ingesters to report the number of chunks expected to be returned by a query,
-	// which is used by queriers to enforce the 'max chunks per query' limit.
-	ChunkCount() (int, error)
 }
 
 // Labels represents an item that has labels e.g. time series.
@@ -513,20 +469,4 @@ type ChunkIterable interface {
 	// Iterator returns an iterator that iterates over potentially overlapping
 	// chunks of the series, sorted by min time.
 	Iterator(chunks.Iterator) chunks.Iterator
-}
-
-// LabelValues is an iterator over label values in sorted order.
-type LabelValues interface {
-	// Next tries to advance the iterator and returns true if it could, false otherwise.
-	Next() bool
-	// At returns the current label value.
-	At() string
-	// Err is the error that iteration eventually failed with.
-	// When an error occurs, the iterator cannot continue.
-	Err() error
-	// Warnings is a collection of warnings that have occurred during iteration.
-	// Warnings could be non-empty even if iteration has not failed with an error.
-	Warnings() annotations.Annotations
-	// Close the iterator and release held resources. Can be called multiple times.
-	Close() error
 }

@@ -17,8 +17,6 @@
 package prometheusremotewrite
 
 import (
-	"context"
-	"log/slog"
 	"math"
 
 	"github.com/prometheus/common/model"
@@ -29,18 +27,14 @@ import (
 	"github.com/prometheus/prometheus/prompb"
 )
 
-func (c *PrometheusConverter) addGaugeNumberDataPoints(ctx context.Context, dataPoints pmetric.NumberDataPointSlice,
-	resource pcommon.Resource, settings Settings, name string) error {
+func (c *PrometheusConverter) addGaugeNumberDataPoints(dataPoints pmetric.NumberDataPointSlice,
+	resource pcommon.Resource, settings Settings, name string) {
 	for x := 0; x < dataPoints.Len(); x++ {
-		if err := c.everyN.checkContext(ctx); err != nil {
-			return err
-		}
-
 		pt := dataPoints.At(x)
 		labels := createAttributes(
 			resource,
 			pt.Attributes(),
-			settings,
+			settings.ExternalLabels,
 			nil,
 			true,
 			model.MetricNameLabel,
@@ -61,24 +55,16 @@ func (c *PrometheusConverter) addGaugeNumberDataPoints(ctx context.Context, data
 		}
 		c.addSample(sample, labels)
 	}
-
-	return nil
 }
 
-func (c *PrometheusConverter) addSumNumberDataPoints(ctx context.Context, dataPoints pmetric.NumberDataPointSlice,
-	resource pcommon.Resource, metric pmetric.Metric, settings Settings, name string, logger *slog.Logger) error {
+func (c *PrometheusConverter) addSumNumberDataPoints(dataPoints pmetric.NumberDataPointSlice,
+	resource pcommon.Resource, metric pmetric.Metric, settings Settings, name string) {
 	for x := 0; x < dataPoints.Len(); x++ {
-		if err := c.everyN.checkContext(ctx); err != nil {
-			return err
-		}
-
 		pt := dataPoints.At(x)
-		timestamp := convertTimeStamp(pt.Timestamp())
-		startTimestampMs := convertTimeStamp(pt.StartTimestamp())
 		lbls := createAttributes(
 			resource,
 			pt.Attributes(),
-			settings,
+			settings.ExternalLabels,
 			nil,
 			true,
 			model.MetricNameLabel,
@@ -86,7 +72,7 @@ func (c *PrometheusConverter) addSumNumberDataPoints(ctx context.Context, dataPo
 		)
 		sample := &prompb.Sample{
 			// convert ns to ms
-			Timestamp: timestamp,
+			Timestamp: convertTimeStamp(pt.Timestamp()),
 		}
 		switch pt.ValueType() {
 		case pmetric.NumberDataPointValueTypeInt:
@@ -97,23 +83,17 @@ func (c *PrometheusConverter) addSumNumberDataPoints(ctx context.Context, dataPo
 		if pt.Flags().NoRecordedValue() {
 			sample.Value = math.Float64frombits(value.StaleNaN)
 		}
-		isMonotonic := metric.Sum().IsMonotonic()
-		if isMonotonic {
-			c.handleStartTime(startTimestampMs, timestamp, lbls, settings, "sum", sample.Value, logger)
-		}
 		ts := c.addSample(sample, lbls)
 		if ts != nil {
-			exemplars, err := getPromExemplars[pmetric.NumberDataPoint](ctx, &c.everyN, pt)
-			if err != nil {
-				return err
-			}
+			exemplars := getPromExemplars[pmetric.NumberDataPoint](pt)
 			ts.Exemplars = append(ts.Exemplars, exemplars...)
 		}
 
 		// add created time series if needed
-		if settings.ExportCreatedMetric && isMonotonic {
-			if startTimestampMs == 0 {
-				return nil
+		if settings.ExportCreatedMetric && metric.Sum().IsMonotonic() {
+			startTimestamp := pt.StartTimestamp()
+			if startTimestamp == 0 {
+				return
 			}
 
 			createdLabels := make([]prompb.Label, len(lbls))
@@ -124,10 +104,7 @@ func (c *PrometheusConverter) addSumNumberDataPoints(ctx context.Context, dataPo
 					break
 				}
 			}
-			c.addTimeSeriesIfNeeded(createdLabels, startTimestampMs, pt.Timestamp())
+			c.addTimeSeriesIfNeeded(createdLabels, startTimestamp, pt.Timestamp())
 		}
-		logger.Debug("addSumNumberDataPoints", "labels", labelsStringer(lbls), "start_ts", startTimestampMs, "sample_ts", timestamp, "type", "sum")
 	}
-
-	return nil
 }

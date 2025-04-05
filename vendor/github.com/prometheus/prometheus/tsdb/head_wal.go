@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-kit/log/level"
 	"go.uber.org/atomic"
 
 	"github.com/prometheus/prometheus/model/exemplar"
@@ -125,9 +126,9 @@ func (h *Head) loadWAL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[ch
 			}
 			// At the moment the only possible error here is out of order exemplars, which we shouldn't see when
 			// replaying the WAL, so lets just log the error if it's not that type.
-			err = h.exemplars.AddExemplar(ms.labels(), exemplar.Exemplar{Ts: e.T, Value: e.V, Labels: e.Labels})
+			err = h.exemplars.AddExemplar(ms.lset, exemplar.Exemplar{Ts: e.T, Value: e.V, Labels: e.Labels})
 			if err != nil && errors.Is(err, storage.ErrOutOfOrderExemplar) {
-				h.logger.Warn("Unexpected error when replaying WAL on exemplar record", "err", err)
+				level.Warn(h.logger).Log("msg", "Unexpected error when replaying WAL on exemplar record", "err", err)
 			}
 		}
 	}(exemplarsInput)
@@ -420,8 +421,8 @@ Outer:
 	}
 
 	if unknownRefs.Load()+unknownExemplarRefs.Load()+unknownHistogramRefs.Load()+unknownMetadataRefs.Load() > 0 {
-		h.logger.Warn(
-			"Unknown series references",
+		level.Warn(h.logger).Log(
+			"msg", "Unknown series references",
 			"samples", unknownRefs.Load(),
 			"exemplars", unknownExemplarRefs.Load(),
 			"histograms", unknownHistogramRefs.Load(),
@@ -429,7 +430,7 @@ Outer:
 		)
 	}
 	if count := mmapOverlappingChunks.Load(); count > 0 {
-		h.logger.Info("Overlapping m-map chunks on duplicate series records", "count", count)
+		level.Info(h.logger).Log("msg", "Overlapping m-map chunks on duplicate series records", "count", count)
 	}
 	return nil
 }
@@ -445,9 +446,9 @@ func (h *Head) resetSeriesWithMMappedChunks(mSeries *memSeries, mmc, oooMmc []*m
 				mmc[0].minTime,
 				mmc[len(mmc)-1].maxTime,
 			) {
-				h.logger.Debug(
-					"M-mapped chunks overlap on a duplicate series record",
-					"series", mSeries.labels().String(),
+				level.Debug(h.logger).Log(
+					"msg", "M-mapped chunks overlap on a duplicate series record",
+					"series", mSeries.lset.String(),
 					"oldref", mSeries.ref,
 					"oldmint", mSeries.mmappedChunks[0].minTime,
 					"oldmaxt", mSeries.mmappedChunks[len(mSeries.mmappedChunks)-1].maxTime,
@@ -500,8 +501,6 @@ func (h *Head) resetSeriesWithMMappedChunks(mSeries *memSeries, mmc, oooMmc []*m
 	}
 
 	// Any samples replayed till now would already be compacted. Resetting the head chunk.
-	// We do not reset oooHeadChunk because that is being replayed from a different WAL
-	// and has not been replayed here.
 	mSeries.nextAt = 0
 	mSeries.headChunks = nil
 	mSeries.app = nil
@@ -647,9 +646,9 @@ func (wp *walSubsetProcessor) processWALSamples(h *Head, mmappedChunks, oooMmapp
 }
 
 func (h *Head) loadWBL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[chunks.HeadSeriesRef]chunks.HeadSeriesRef, lastMmapRef chunks.ChunkDiskMapperRef) (err error) {
-	// Track number of samples, histogram samples, m-map markers, that referenced a series we don't know about
+	// Track number of samples, m-map markers, that referenced a series we don't know about
 	// for error reporting.
-	var unknownRefs, unknownHistogramRefs, mmapMarkerUnknownRefs atomic.Uint64
+	var unknownRefs, mmapMarkerUnknownRefs atomic.Uint64
 
 	lastSeq, lastOff := lastMmapRef.Unpack()
 	// Start workers that each process samples for a partition of the series ID space.
@@ -658,9 +657,8 @@ func (h *Head) loadWBL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[ch
 		concurrency = h.opts.WALReplayConcurrency
 		processors  = make([]wblSubsetProcessor, concurrency)
 
-		dec             record.Decoder
-		shards          = make([][]record.RefSample, concurrency)
-		histogramShards = make([][]histogramRecord, concurrency)
+		dec    = record.NewDecoder(syms)
+		shards = make([][]record.RefSample, concurrency)
 
 		decodedCh   = make(chan interface{}, 10)
 		decodeErr   error
@@ -672,16 +670,6 @@ func (h *Head) loadWBL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[ch
 		markersPool = sync.Pool{
 			New: func() interface{} {
 				return []record.RefMmapMarker{}
-			},
-		}
-		histogramSamplesPool = sync.Pool{
-			New: func() interface{} {
-				return []record.RefHistogramSample{}
-			},
-		}
-		floatHistogramSamplesPool = sync.Pool{
-			New: func() interface{} {
-				return []record.RefFloatHistogramSample{}
 			},
 		}
 	)
@@ -704,9 +692,8 @@ func (h *Head) loadWBL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[ch
 		processors[i].setup()
 
 		go func(wp *wblSubsetProcessor) {
-			unknown, unknownHistograms := wp.processWBLSamples(h)
+			unknown := wp.processWBLSamples(h)
 			unknownRefs.Add(unknown)
-			unknownHistogramRefs.Add(unknownHistograms)
 			wg.Done()
 		}(&processors[i])
 	}
@@ -740,30 +727,6 @@ func (h *Head) loadWBL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[ch
 					return
 				}
 				decodedCh <- markers
-			case record.HistogramSamples:
-				hists := histogramSamplesPool.Get().([]record.RefHistogramSample)[:0]
-				hists, err = dec.HistogramSamples(rec, hists)
-				if err != nil {
-					decodeErr = &wlog.CorruptionErr{
-						Err:     fmt.Errorf("decode histograms: %w", err),
-						Segment: r.Segment(),
-						Offset:  r.Offset(),
-					}
-					return
-				}
-				decodedCh <- hists
-			case record.FloatHistogramSamples:
-				hists := floatHistogramSamplesPool.Get().([]record.RefFloatHistogramSample)[:0]
-				hists, err = dec.FloatHistogramSamples(rec, hists)
-				if err != nil {
-					decodeErr = &wlog.CorruptionErr{
-						Err:     fmt.Errorf("decode float histograms: %w", err),
-						Segment: r.Segment(),
-						Offset:  r.Offset(),
-					}
-					return
-				}
-				decodedCh <- hists
 			default:
 				// Noop.
 			}
@@ -828,70 +791,6 @@ func (h *Head) loadWBL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[ch
 				idx := uint64(ms.ref) % uint64(concurrency)
 				processors[idx].input <- wblSubsetProcessorInputItem{mmappedSeries: ms}
 			}
-		case []record.RefHistogramSample:
-			samples := v
-			// We split up the samples into chunks of 5000 samples or less.
-			// With O(300 * #cores) in-flight sample batches, large scrapes could otherwise
-			// cause thousands of very large in flight buffers occupying large amounts
-			// of unused memory.
-			for len(samples) > 0 {
-				m := 5000
-				if len(samples) < m {
-					m = len(samples)
-				}
-				for i := 0; i < concurrency; i++ {
-					if histogramShards[i] == nil {
-						histogramShards[i] = processors[i].reuseHistogramBuf()
-					}
-				}
-				for _, sam := range samples[:m] {
-					if r, ok := multiRef[sam.Ref]; ok {
-						sam.Ref = r
-					}
-					mod := uint64(sam.Ref) % uint64(concurrency)
-					histogramShards[mod] = append(histogramShards[mod], histogramRecord{ref: sam.Ref, t: sam.T, h: sam.H})
-				}
-				for i := 0; i < concurrency; i++ {
-					if len(histogramShards[i]) > 0 {
-						processors[i].input <- wblSubsetProcessorInputItem{histogramSamples: histogramShards[i]}
-						histogramShards[i] = nil
-					}
-				}
-				samples = samples[m:]
-			}
-			histogramSamplesPool.Put(v) //nolint:staticcheck
-		case []record.RefFloatHistogramSample:
-			samples := v
-			// We split up the samples into chunks of 5000 samples or less.
-			// With O(300 * #cores) in-flight sample batches, large scrapes could otherwise
-			// cause thousands of very large in flight buffers occupying large amounts
-			// of unused memory.
-			for len(samples) > 0 {
-				m := 5000
-				if len(samples) < m {
-					m = len(samples)
-				}
-				for i := 0; i < concurrency; i++ {
-					if histogramShards[i] == nil {
-						histogramShards[i] = processors[i].reuseHistogramBuf()
-					}
-				}
-				for _, sam := range samples[:m] {
-					if r, ok := multiRef[sam.Ref]; ok {
-						sam.Ref = r
-					}
-					mod := uint64(sam.Ref) % uint64(concurrency)
-					histogramShards[mod] = append(histogramShards[mod], histogramRecord{ref: sam.Ref, t: sam.T, fh: sam.FH})
-				}
-				for i := 0; i < concurrency; i++ {
-					if len(histogramShards[i]) > 0 {
-						processors[i].input <- wblSubsetProcessorInputItem{histogramSamples: histogramShards[i]}
-						histogramShards[i] = nil
-					}
-				}
-				samples = samples[m:]
-			}
-			floatHistogramSamplesPool.Put(v) //nolint:staticcheck
 		default:
 			panic(fmt.Errorf("unexpected decodedCh type: %T", d))
 		}
@@ -912,7 +811,7 @@ func (h *Head) loadWBL(r *wlog.Reader, syms *labels.SymbolTable, multiRef map[ch
 	}
 
 	if unknownRefs.Load() > 0 || mmapMarkerUnknownRefs.Load() > 0 {
-		h.logger.Warn("Unknown series references for ooo WAL replay", "samples", unknownRefs.Load(), "mmap_markers", mmapMarkerUnknownRefs.Load())
+		level.Warn(h.logger).Log("msg", "Unknown series references for ooo WAL replay", "samples", unknownRefs.Load(), "mmap_markers", mmapMarkerUnknownRefs.Load())
 	}
 	return nil
 }
@@ -934,28 +833,23 @@ func (e errLoadWbl) Unwrap() error {
 }
 
 type wblSubsetProcessor struct {
-	input            chan wblSubsetProcessorInputItem
-	output           chan []record.RefSample
-	histogramsOutput chan []histogramRecord
+	input  chan wblSubsetProcessorInputItem
+	output chan []record.RefSample
 }
 
 type wblSubsetProcessorInputItem struct {
-	mmappedSeries    *memSeries
-	samples          []record.RefSample
-	histogramSamples []histogramRecord
+	mmappedSeries *memSeries
+	samples       []record.RefSample
 }
 
 func (wp *wblSubsetProcessor) setup() {
 	wp.output = make(chan []record.RefSample, 300)
-	wp.histogramsOutput = make(chan []histogramRecord, 300)
 	wp.input = make(chan wblSubsetProcessorInputItem, 300)
 }
 
 func (wp *wblSubsetProcessor) closeAndDrain() {
 	close(wp.input)
 	for range wp.output {
-	}
-	for range wp.histogramsOutput {
 	}
 }
 
@@ -969,21 +863,10 @@ func (wp *wblSubsetProcessor) reuseBuf() []record.RefSample {
 	return nil
 }
 
-// If there is a buffer in the output chan, return it for reuse, otherwise return nil.
-func (wp *wblSubsetProcessor) reuseHistogramBuf() []histogramRecord {
-	select {
-	case buf := <-wp.histogramsOutput:
-		return buf[:0]
-	default:
-	}
-	return nil
-}
-
 // processWBLSamples adds the samples it receives to the head and passes
 // the buffer received to an output channel for reuse.
-func (wp *wblSubsetProcessor) processWBLSamples(h *Head) (unknownRefs, unknownHistogramRefs uint64) {
+func (wp *wblSubsetProcessor) processWBLSamples(h *Head) (unknownRefs uint64) {
 	defer close(wp.output)
-	defer close(wp.histogramsOutput)
 
 	oooCapMax := h.opts.OutOfOrderCapMax.Load()
 	// We don't check for minValidTime for ooo samples.
@@ -1004,7 +887,7 @@ func (wp *wblSubsetProcessor) processWBLSamples(h *Head) (unknownRefs, unknownHi
 				unknownRefs++
 				continue
 			}
-			ok, chunkCreated, _ := ms.insert(s.T, s.V, nil, nil, h.chunkDiskMapper, oooCapMax, h.logger)
+			ok, chunkCreated, _ := ms.insert(s.T, s.V, h.chunkDiskMapper, oooCapMax)
 			if chunkCreated {
 				h.metrics.chunksCreated.Inc()
 				h.metrics.chunks.Inc()
@@ -1022,41 +905,11 @@ func (wp *wblSubsetProcessor) processWBLSamples(h *Head) (unknownRefs, unknownHi
 		case wp.output <- in.samples:
 		default:
 		}
-		for _, s := range in.histogramSamples {
-			ms := h.series.getByID(s.ref)
-			if ms == nil {
-				unknownHistogramRefs++
-				continue
-			}
-			var chunkCreated bool
-			var ok bool
-			if s.h != nil {
-				ok, chunkCreated, _ = ms.insert(s.t, 0, s.h, nil, h.chunkDiskMapper, oooCapMax, h.logger)
-			} else {
-				ok, chunkCreated, _ = ms.insert(s.t, 0, nil, s.fh, h.chunkDiskMapper, oooCapMax, h.logger)
-			}
-			if chunkCreated {
-				h.metrics.chunksCreated.Inc()
-				h.metrics.chunks.Inc()
-			}
-			if ok {
-				if s.t > maxt {
-					maxt = s.t
-				}
-				if s.t < mint {
-					mint = s.t
-				}
-			}
-		}
-		select {
-		case wp.histogramsOutput <- in.histogramSamples:
-		default:
-		}
 	}
 
 	h.updateMinOOOMaxOOOTime(mint, maxt)
 
-	return unknownRefs, unknownHistogramRefs
+	return unknownRefs
 }
 
 const (
@@ -1079,7 +932,7 @@ func (s *memSeries) encodeToSnapshotRecord(b []byte) []byte {
 
 	buf.PutByte(chunkSnapshotRecordTypeSeries)
 	buf.PutBE64(uint64(s.ref))
-	record.EncodeLabels(&buf, s.labels())
+	record.EncodeLabels(&buf, s.lset)
 	buf.PutBE64int64(0) // Backwards-compatibility; was chunkRange but now unused.
 
 	s.Lock()
@@ -1213,7 +1066,7 @@ const chunkSnapshotPrefix = "chunk_snapshot."
 func (h *Head) ChunkSnapshot() (*ChunkSnapshotStats, error) {
 	if h.wal == nil {
 		// If we are not storing any WAL, does not make sense to take a snapshot too.
-		h.logger.Warn("skipping chunk snapshotting as WAL is disabled")
+		level.Warn(h.logger).Log("msg", "skipping chunk snapshotting as WAL is disabled")
 		return &ChunkSnapshotStats{}, nil
 	}
 	h.chunkSnapshotMtx.Lock()
@@ -1362,7 +1215,7 @@ func (h *Head) ChunkSnapshot() (*ChunkSnapshotStats, error) {
 		// Leftover old chunk snapshots do not cause problems down the line beyond
 		// occupying disk space.
 		// They will just be ignored since a higher chunk snapshot exists.
-		h.logger.Error("delete old chunk snapshots", "err", err)
+		level.Error(h.logger).Log("msg", "delete old chunk snapshots", "err", err)
 	}
 	return stats, nil
 }
@@ -1372,12 +1225,12 @@ func chunkSnapshotDir(wlast, woffset int) string {
 }
 
 func (h *Head) performChunkSnapshot() error {
-	h.logger.Info("creating chunk snapshot")
+	level.Info(h.logger).Log("msg", "creating chunk snapshot")
 	startTime := time.Now()
 	stats, err := h.ChunkSnapshot()
 	elapsed := time.Since(startTime)
 	if err == nil {
-		h.logger.Info("chunk snapshot complete", "duration", elapsed.String(), "num_series", stats.TotalSeries, "dir", stats.Dir)
+		level.Info(h.logger).Log("msg", "chunk snapshot complete", "duration", elapsed.String(), "num_series", stats.TotalSeries, "dir", stats.Dir)
 	}
 	if err != nil {
 		return fmt.Errorf("chunk snapshot: %w", err)
@@ -1492,7 +1345,7 @@ func (h *Head) loadChunkSnapshot() (int, int, map[chunks.HeadSeriesRef]*memSerie
 	}
 	defer func() {
 		if err := sr.Close(); err != nil {
-			h.logger.Warn("error while closing the wal segments reader", "err", err)
+			level.Warn(h.logger).Log("msg", "error while closing the wal segments reader", "err", err)
 		}
 	}()
 
@@ -1632,7 +1485,7 @@ Outer:
 					continue
 				}
 
-				if err := h.exemplars.AddExemplar(ms.labels(), exemplar.Exemplar{
+				if err := h.exemplars.AddExemplar(ms.lset, exemplar.Exemplar{
 					Labels: e.Labels,
 					Value:  e.V,
 					Ts:     e.T,
@@ -1681,9 +1534,9 @@ Outer:
 	}
 
 	elapsed := time.Since(start)
-	h.logger.Info("chunk snapshot loaded", "dir", dir, "num_series", numSeries, "duration", elapsed.String())
+	level.Info(h.logger).Log("msg", "chunk snapshot loaded", "dir", dir, "num_series", numSeries, "duration", elapsed.String())
 	if unknownRefs > 0 {
-		h.logger.Warn("unknown series references during chunk snapshot replay", "count", unknownRefs)
+		level.Warn(h.logger).Log("msg", "unknown series references during chunk snapshot replay", "count", unknownRefs)
 	}
 
 	return snapIdx, snapOffset, refSeries, nil

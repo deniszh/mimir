@@ -19,23 +19,24 @@ package prometheus
 import (
 	"strings"
 	"unicode"
-
-	"github.com/prometheus/prometheus/util/strutil"
 )
 
-// Normalizes the specified label to follow Prometheus label names standard.
+// Normalizes the specified label to follow Prometheus label names standard
 //
-// See rules at https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels.
+// See rules at https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels
 //
-// Labels that start with non-letter rune will be prefixed with "key_".
-// An exception is made for double-underscores which are allowed.
-func NormalizeLabel(label string, allowUTF8 bool) string {
+// Labels that start with non-letter rune will be prefixed with "key_"
+//
+// Exception is made for double-underscores which are allowed
+func NormalizeLabel(label string) string {
+
 	// Trivial case
-	if len(label) == 0 || allowUTF8 {
+	if len(label) == 0 {
 		return label
 	}
 
-	label = strutil.SanitizeLabelName(label)
+	// Replace all non-alphanumeric runes with underscores
+	label = strings.Map(sanitizeRune, label)
 
 	// If label starts with a number, prepend with "key_"
 	if unicode.IsDigit(rune(label[0])) {
@@ -45,4 +46,12 @@ func NormalizeLabel(label string, allowUTF8 bool) string {
 	}
 
 	return label
+}
+
+// Return '_' for anything non-alphanumeric
+func sanitizeRune(r rune) rune {
+	if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		return r
+	}
+	return '_'
 }

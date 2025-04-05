@@ -45,24 +45,19 @@ type mergeGenericQuerier struct {
 //
 // In case of overlaps between the data given by primaries' and secondaries' Selects, merge function will be used.
 func NewMergeQuerier(primaries, secondaries []Querier, mergeFn VerticalSeriesMergeFunc) Querier {
-	primaries = filterQueriers(primaries)
-	secondaries = filterQueriers(secondaries)
-
-	switch {
-	case len(primaries) == 0 && len(secondaries) == 0:
-		return noopQuerier{}
-	case len(primaries) == 1 && len(secondaries) == 0:
-		return primaries[0]
-	case len(primaries) == 0 && len(secondaries) == 1:
-		return &querierAdapter{newSecondaryQuerierFrom(secondaries[0])}
+	if len(primaries)+len(secondaries) == 0 {
+		return NoopQuerier()
 	}
-
 	queriers := make([]genericQuerier, 0, len(primaries)+len(secondaries))
 	for _, q := range primaries {
-		queriers = append(queriers, newGenericQuerierFrom(q))
+		if _, ok := q.(noopQuerier); !ok && q != nil {
+			queriers = append(queriers, newGenericQuerierFrom(q))
+		}
 	}
 	for _, q := range secondaries {
-		queriers = append(queriers, newSecondaryQuerierFrom(q))
+		if _, ok := q.(noopQuerier); !ok && q != nil {
+			queriers = append(queriers, newSecondaryQuerierFrom(q))
+		}
 	}
 
 	concurrentSelect := false
@@ -76,40 +71,22 @@ func NewMergeQuerier(primaries, secondaries []Querier, mergeFn VerticalSeriesMer
 	}}
 }
 
-func filterQueriers(qs []Querier) []Querier {
-	ret := make([]Querier, 0, len(qs))
-	for _, q := range qs {
-		if _, ok := q.(noopQuerier); !ok && q != nil {
-			ret = append(ret, q)
-		}
-	}
-	return ret
-}
-
 // NewMergeChunkQuerier returns a new Chunk Querier that merges results of given primary and secondary chunk queriers.
 // See NewFanout commentary to learn more about primary vs secondary differences.
 //
 // In case of overlaps between the data given by primaries' and secondaries' Selects, merge function will be used.
 // TODO(bwplotka): Currently merge will compact overlapping chunks with bigger chunk, without limit. Split it: https://github.com/prometheus/tsdb/issues/670
 func NewMergeChunkQuerier(primaries, secondaries []ChunkQuerier, mergeFn VerticalChunkSeriesMergeFunc) ChunkQuerier {
-	primaries = filterChunkQueriers(primaries)
-	secondaries = filterChunkQueriers(secondaries)
-
-	switch {
-	case len(primaries) == 0 && len(secondaries) == 0:
-		return noopChunkQuerier{}
-	case len(primaries) == 1 && len(secondaries) == 0:
-		return primaries[0]
-	case len(primaries) == 0 && len(secondaries) == 1:
-		return &chunkQuerierAdapter{newSecondaryQuerierFromChunk(secondaries[0])}
-	}
-
 	queriers := make([]genericQuerier, 0, len(primaries)+len(secondaries))
 	for _, q := range primaries {
-		queriers = append(queriers, newGenericQuerierFromChunk(q))
+		if _, ok := q.(noopChunkQuerier); !ok && q != nil {
+			queriers = append(queriers, newGenericQuerierFromChunk(q))
+		}
 	}
-	for _, q := range secondaries {
-		queriers = append(queriers, newSecondaryQuerierFromChunk(q))
+	for _, querier := range secondaries {
+		if _, ok := querier.(noopChunkQuerier); !ok && querier != nil {
+			queriers = append(queriers, newSecondaryQuerierFromChunk(querier))
+		}
 	}
 
 	concurrentSelect := false
@@ -123,18 +100,42 @@ func NewMergeChunkQuerier(primaries, secondaries []ChunkQuerier, mergeFn Vertica
 	}}
 }
 
-func filterChunkQueriers(qs []ChunkQuerier) []ChunkQuerier {
-	ret := make([]ChunkQuerier, 0, len(qs))
-	for _, q := range qs {
-		if _, ok := q.(noopChunkQuerier); !ok && q != nil {
-			ret = append(ret, q)
-		}
-	}
-	return ret
-}
-
 // Select returns a set of series that matches the given label matchers.
 func (q *mergeGenericQuerier) Select(ctx context.Context, sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) genericSeriesSet {
+	if len(q.queriers) == 0 {
+		return noopGenericSeriesSet{}
+	}
+
+	// PP_CHANGES.md: rebuild on cpp start
+	// See which label must be non-empty.
+	// Optimization for case like {l=~".", l!="1"}.
+	labelMustBeSet := make(map[string]bool, len(matchers))
+	for _, m := range matchers {
+		if !m.Matches("") {
+			labelMustBeSet[m.Name] = true
+		}
+	}
+
+	isSubtractingMatcher := func(m *labels.Matcher) bool {
+		if !labelMustBeSet[m.Name] {
+			return true
+		}
+		return (m.Type == labels.MatchNotEqual || m.Type == labels.MatchNotRegexp) && m.Matches("")
+	}
+
+	slices.SortStableFunc(matchers, func(i, j *labels.Matcher) int {
+		if !isSubtractingMatcher(i) && isSubtractingMatcher(j) {
+			return -1
+		}
+
+		return +1
+	})
+	// PP_CHANGES.md: rebuild on cpp end
+
+	if len(q.queriers) == 1 {
+		return q.queriers[0].Select(ctx, sortSeries, hints, matchers...)
+	}
+
 	seriesSets := make([]genericSeriesSet, 0, len(q.queriers))
 	if !q.concurrentSelect {
 		for _, querier := range q.queriers {
@@ -153,18 +154,13 @@ func (q *mergeGenericQuerier) Select(ctx context.Context, sortSeries bool, hints
 	)
 	// Schedule all Selects for all queriers we know about.
 	for _, querier := range q.queriers {
-		// copy the matchers as some queriers may alter the slice.
-		// See https://github.com/prometheus/prometheus/issues/14723
-		matchersCopy := make([]*labels.Matcher, len(matchers))
-		copy(matchersCopy, matchers)
-
 		wg.Add(1)
-		go func(qr genericQuerier, m []*labels.Matcher) {
+		go func(qr genericQuerier) {
 			defer wg.Done()
 
 			// We need to sort for NewMergeSeriesSet to work.
-			seriesSetChan <- qr.Select(ctx, true, hints, m...)
-		}(querier, matchersCopy)
+			seriesSetChan <- qr.Select(ctx, true, hints, matchers...)
+		}(querier)
 	}
 	go func() {
 		wg.Wait()
@@ -192,8 +188,8 @@ func (l labelGenericQueriers) SplitByHalf() (labelGenericQueriers, labelGenericQ
 // LabelValues returns all potential values for a label name.
 // If matchers are specified the returned result set is reduced
 // to label values of metrics matching the matchers.
-func (q *mergeGenericQuerier) LabelValues(ctx context.Context, name string, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
-	res, ws, err := q.lvals(ctx, q.queriers, name, hints, matchers...)
+func (q *mergeGenericQuerier) LabelValues(ctx context.Context, name string, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+	res, ws, err := q.lvals(ctx, q.queriers, name, matchers...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LabelValues() from merge generic querier for label %s: %w", name, err)
 	}
@@ -201,22 +197,22 @@ func (q *mergeGenericQuerier) LabelValues(ctx context.Context, name string, hint
 }
 
 // lvals performs merge sort for LabelValues from multiple queriers.
-func (q *mergeGenericQuerier) lvals(ctx context.Context, lq labelGenericQueriers, n string, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+func (q *mergeGenericQuerier) lvals(ctx context.Context, lq labelGenericQueriers, n string, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	if lq.Len() == 0 {
 		return nil, nil, nil
 	}
 	if lq.Len() == 1 {
-		return lq.Get(0).LabelValues(ctx, n, hints, matchers...)
+		return lq.Get(0).LabelValues(ctx, n, matchers...)
 	}
 	a, b := lq.SplitByHalf()
 
 	var ws annotations.Annotations
-	s1, w, err := q.lvals(ctx, a, n, hints, matchers...)
+	s1, w, err := q.lvals(ctx, a, n, matchers...)
 	ws.Merge(w)
 	if err != nil {
 		return nil, ws, err
 	}
-	s2, ws, err := q.lvals(ctx, b, n, hints, matchers...)
+	s2, ws, err := q.lvals(ctx, b, n, matchers...)
 	ws.Merge(w)
 	if err != nil {
 		return nil, ws, err
@@ -252,13 +248,13 @@ func mergeStrings(a, b []string) []string {
 }
 
 // LabelNames returns all the unique label names present in all queriers in sorted order.
-func (q *mergeGenericQuerier) LabelNames(ctx context.Context, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+func (q *mergeGenericQuerier) LabelNames(ctx context.Context, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	var (
 		labelNamesMap = make(map[string]struct{})
 		warnings      annotations.Annotations
 	)
 	for _, querier := range q.queriers {
-		names, wrn, err := querier.LabelNames(ctx, hints, matchers...)
+		names, wrn, err := querier.LabelNames(ctx, matchers...)
 		if wrn != nil {
 			// TODO(bwplotka): We could potentially wrap warnings.
 			warnings.Merge(wrn)
@@ -716,40 +712,20 @@ func NewCompactingChunkSeriesMerger(mergeFunc VerticalSeriesMergeFunc) VerticalC
 		if len(series) == 0 {
 			return nil
 		}
-
-		chunkIteratorFn := func(chunks.Iterator) chunks.Iterator {
-			iterators := make([]chunks.Iterator, 0, len(series))
-			for _, s := range series {
-				iterators = append(iterators, s.Iterator(nil))
-			}
-			return &compactChunkIterator{
-				mergeFunc: mergeFunc,
-				iterators: iterators,
-			}
-		}
-
 		return &ChunkSeriesEntry{
-			Lset:            series[0].Labels(),
-			ChunkIteratorFn: chunkIteratorFn,
-			ChunkCountFn: func() (int, error) {
-				// This method is expensive, but we don't expect to ever actually use this on the ingester query path in Mimir -
-				// it's just here to ensure things don't break if this assumption ever changes.
-				// Ingesters return uncompacted chunks to queriers, so this method is never called.
-				return countChunks(chunkIteratorFn)
+			Lset: series[0].Labels(),
+			ChunkIteratorFn: func(chunks.Iterator) chunks.Iterator {
+				iterators := make([]chunks.Iterator, 0, len(series))
+				for _, s := range series {
+					iterators = append(iterators, s.Iterator(nil))
+				}
+				return &compactChunkIterator{
+					mergeFunc: mergeFunc,
+					iterators: iterators,
+				}
 			},
 		}
 	}
-}
-
-func countChunks(chunkIteratorFn func(chunks.Iterator) chunks.Iterator) (int, error) {
-	chunkCount := 0
-	it := chunkIteratorFn(nil)
-
-	for it.Next() {
-		chunkCount++
-	}
-
-	return chunkCount, it.Err()
 }
 
 // compactChunkIterator is responsible to compact chunks from different iterators of the same time series into single chainSeries.
@@ -879,7 +855,6 @@ func NewConcatenatingChunkSeriesMerger() VerticalChunkSeriesMergeFunc {
 		if len(series) == 0 {
 			return nil
 		}
-
 		return &ChunkSeriesEntry{
 			Lset: series[0].Labels(),
 			ChunkIteratorFn: func(chunks.Iterator) chunks.Iterator {
@@ -890,20 +865,6 @@ func NewConcatenatingChunkSeriesMerger() VerticalChunkSeriesMergeFunc {
 				return &concatenatingChunkIterator{
 					iterators: iterators,
 				}
-			},
-			ChunkCountFn: func() (int, error) {
-				chunkCount := 0
-
-				for _, series := range series {
-					c, err := series.ChunkCount()
-					if err != nil {
-						return 0, err
-					}
-
-					chunkCount += c
-				}
-
-				return chunkCount, nil
 			},
 		}
 	}
