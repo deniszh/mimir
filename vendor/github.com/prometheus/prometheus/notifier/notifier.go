@@ -110,11 +110,10 @@ type Manager struct {
 
 	metrics *alertMetrics
 
-	more chan struct{}
-	mtx  sync.RWMutex
-
-	stopOnce      *sync.Once
-	stopRequested chan struct{}
+	more   chan struct{}
+	mtx    sync.RWMutex
+	ctx    context.Context
+	cancel func()
 
 	alertmanagers map[string]*alertmanagerSet
 	logger        log.Logger
@@ -122,10 +121,9 @@ type Manager struct {
 
 // Options are the configurable parameters of a Handler.
 type Options struct {
-	QueueCapacity   int
-	DrainOnShutdown bool
-	ExternalLabels  labels.Labels
-	RelabelConfigs  []*relabel.Config
+	QueueCapacity  int
+	ExternalLabels labels.Labels
+	RelabelConfigs []*relabel.Config
 	// Used for sending HTTP requests to the Alertmanager.
 	Do func(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error)
 
@@ -136,6 +134,7 @@ type alertMetrics struct {
 	latency                 *prometheus.SummaryVec
 	errors                  *prometheus.CounterVec
 	sent                    *prometheus.CounterVec
+	successfullySent        *prometheus.CounterVec // PP_CHANGES.md: add successfully send metric
 	dropped                 prometheus.Counter
 	queueLength             prometheus.GaugeFunc
 	queueCapacity           prometheus.Gauge
@@ -166,6 +165,15 @@ func newAlertMetrics(r prometheus.Registerer, queueCap int, queueLen, alertmanag
 			Subsystem: subsystem,
 			Name:      "sent_total",
 			Help:      "Total number of alerts sent.",
+		},
+			[]string{alertmanagerLabel},
+		),
+		// PP_CHANGES.md: add successfully send metric
+		successfullySent: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "successfully_sent_total",
+			Help:      "Total number of successfully sent alerts.",
 		},
 			[]string{alertmanagerLabel},
 		),
@@ -219,6 +227,8 @@ func do(ctx context.Context, client *http.Client, req *http.Request) (*http.Resp
 
 // NewManager is the manager constructor.
 func NewManager(o *Options, logger log.Logger) *Manager {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	if o.Do == nil {
 		o.Do = do
 	}
@@ -227,12 +237,12 @@ func NewManager(o *Options, logger log.Logger) *Manager {
 	}
 
 	n := &Manager{
-		queue:         make([]*Alert, 0, o.QueueCapacity),
-		more:          make(chan struct{}, 1),
-		stopRequested: make(chan struct{}),
-		stopOnce:      &sync.Once{},
-		opts:          o,
-		logger:        logger,
+		queue:  make([]*Alert, 0, o.QueueCapacity),
+		ctx:    ctx,
+		cancel: cancel,
+		more:   make(chan struct{}, 1),
+		opts:   o,
+		logger: logger,
 	}
 
 	queueLenFunc := func() float64 { return float64(n.queueLen()) }
@@ -298,98 +308,36 @@ func (n *Manager) nextBatch() []*Alert {
 	return alerts
 }
 
-// Run dispatches notifications continuously, returning once Stop has been called and all
-// pending notifications have been drained from the queue (if draining is enabled).
-//
-// Dispatching of notifications occurs in parallel to processing target updates to avoid one starving the other.
-// Refer to https://github.com/prometheus/prometheus/issues/13676 for more details.
+// Run dispatches notifications continuously.
 func (n *Manager) Run(tsets <-chan map[string][]*targetgroup.Group) {
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		n.targetUpdateLoop(tsets)
-	}()
-
-	go func() {
-		defer wg.Done()
-		n.sendLoop()
-		n.drainQueue()
-	}()
-
-	wg.Wait()
-	level.Info(n.logger).Log("msg", "Notification manager stopped")
-}
-
-// sendLoop continuously consumes the notifications queue and sends alerts to
-// the configured Alertmanagers.
-func (n *Manager) sendLoop() {
 	for {
-		// If we've been asked to stop, that takes priority over sending any further notifications.
+		// The select is split in two parts, such as we will first try to read
+		// new alertmanager targets if they are available, before sending new
+		// alerts.
 		select {
-		case <-n.stopRequested:
+		case <-n.ctx.Done():
 			return
+		case ts := <-tsets:
+			n.reload(ts)
 		default:
 			select {
-			case <-n.stopRequested:
-				return
-
-			case <-n.more:
-				n.sendOneBatch()
-
-				// If the queue still has items left, kick off the next iteration.
-				if n.queueLen() > 0 {
-					n.setMore()
-				}
-			}
-		}
-	}
-}
-
-// targetUpdateLoop receives updates of target groups and triggers a reload.
-func (n *Manager) targetUpdateLoop(tsets <-chan map[string][]*targetgroup.Group) {
-	for {
-		// If we've been asked to stop, that takes priority over processing any further target group updates.
-		select {
-		case <-n.stopRequested:
-			return
-		default:
-			select {
-			case <-n.stopRequested:
+			case <-n.ctx.Done():
 				return
 			case ts := <-tsets:
 				n.reload(ts)
+			case <-n.more:
 			}
 		}
-	}
-}
+		alerts := n.nextBatch()
 
-func (n *Manager) sendOneBatch() {
-	alerts := n.nextBatch()
-
-	if !n.sendAll(alerts...) {
-		n.metrics.dropped.Add(float64(len(alerts)))
-	}
-}
-
-func (n *Manager) drainQueue() {
-	if !n.opts.DrainOnShutdown {
-		if n.queueLen() > 0 {
-			level.Warn(n.logger).Log("msg", "Draining remaining notifications on shutdown is disabled, and some notifications have been dropped", "count", n.queueLen())
-			n.metrics.dropped.Add(float64(n.queueLen()))
+		if !n.sendAll(alerts...) {
+			n.metrics.dropped.Add(float64(len(alerts)))
 		}
-
-		return
+		// If the queue still has items left, kick off the next iteration.
+		if n.queueLen() > 0 {
+			n.setMore()
+		}
 	}
-
-	level.Info(n.logger).Log("msg", "Draining any remaining notifications...")
-
-	for n.queueLen() > 0 {
-		n.sendOneBatch()
-	}
-
-	level.Info(n.logger).Log("msg", "Remaining notifications drained")
 }
 
 func (n *Manager) reload(tgs map[string][]*targetgroup.Group) {
@@ -533,6 +481,10 @@ func (n *Manager) sendAll(alerts ...*Alert) bool {
 		numSuccess atomic.Uint64
 	)
 	for _, ams := range amSets {
+		if len(ams.ams) == 0 {
+			continue
+		}
+
 		var (
 			payload  []byte
 			err      error
@@ -540,11 +492,6 @@ func (n *Manager) sendAll(alerts ...*Alert) bool {
 		)
 
 		ams.mtx.RLock()
-
-		if len(ams.ams) == 0 {
-			ams.mtx.RUnlock()
-			continue
-		}
 
 		if len(ams.cfg.AlertRelabelConfigs) > 0 {
 			amAlerts = relabelAlerts(ams.cfg.AlertRelabelConfigs, labels.Labels{}, alerts)
@@ -604,7 +551,7 @@ func (n *Manager) sendAll(alerts ...*Alert) bool {
 		for _, am := range ams.ams {
 			wg.Add(1)
 
-			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(ams.cfg.Timeout))
+			ctx, cancel := context.WithTimeout(n.ctx, time.Duration(ams.cfg.Timeout))
 			defer cancel()
 
 			go func(ctx context.Context, client *http.Client, url string, payload []byte, count int) {
@@ -613,6 +560,8 @@ func (n *Manager) sendAll(alerts ...*Alert) bool {
 					n.metrics.errors.WithLabelValues(url).Inc()
 				} else {
 					numSuccess.Inc()
+					// PP_CHANGES.md: add successfully send metric
+					n.metrics.successfullySent.WithLabelValues(url).Add(float64(len(alerts)))
 				}
 				n.metrics.latency.WithLabelValues(url).Observe(time.Since(begin).Seconds())
 				n.metrics.sent.WithLabelValues(url).Add(float64(len(amAlerts)))
@@ -681,19 +630,10 @@ func (n *Manager) sendOne(ctx context.Context, c *http.Client, url string, b []b
 	return nil
 }
 
-// Stop signals the notification manager to shut down and immediately returns.
-//
-// Run will return once the notification manager has successfully shut down.
-//
-// The manager will optionally drain any queued notifications before shutting down.
-//
-// Stop is safe to call multiple times.
+// Stop shuts down the notification handler.
 func (n *Manager) Stop() {
 	level.Info(n.logger).Log("msg", "Stopping notification manager...")
-
-	n.stopOnce.Do(func() {
-		close(n.stopRequested)
-	})
+	n.cancel()
 }
 
 // Alertmanager holds Alertmanager endpoint information.
@@ -785,6 +725,8 @@ func (s *alertmanagerSet) sync(tgs []*targetgroup.Group) {
 		// This will initialize the Counters for the AM to 0.
 		s.metrics.sent.WithLabelValues(us)
 		s.metrics.errors.WithLabelValues(us)
+		// PP_CHANGES.md: add successfully send metric
+		s.metrics.successfullySent.WithLabelValues(us)
 
 		seen[us] = struct{}{}
 		s.ams = append(s.ams, am)

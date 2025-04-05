@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -82,12 +81,6 @@ type IndexReader interface {
 	// If no postings are found having at least one matching label, an empty iterator is returned.
 	PostingsForLabelMatching(ctx context.Context, name string, match func(value string) bool) index.Postings
 
-	// PostingsForMatchers assembles a single postings iterator based on the given matchers.
-	// The resulting postings are not ordered by series.
-	// If concurrent hint is set to true, call will be optimized for a (most likely) concurrent call with same matchers,
-	// avoiding same calculations twice, however this implementation may lead to a worse performance when called once.
-	PostingsForMatchers(ctx context.Context, concurrent bool, ms ...*labels.Matcher) (index.Postings, error)
-
 	// SortedPostings returns a postings list that is reordered to be sorted
 	// by the label set of the underlying series.
 	SortedPostings(index.Postings) index.Postings
@@ -110,16 +103,9 @@ type IndexReader interface {
 	// storage.ErrNotFound is returned as error.
 	LabelValueFor(ctx context.Context, id storage.SeriesRef, label string) (string, error)
 
-	// LabelValuesFor returns LabelValues for the given label name in the series referred to by postings.
-	LabelValuesFor(p index.Postings, name string) storage.LabelValues
-
-	// LabelValuesExcluding returns LabelValues for the given label name in all other series than those referred to by postings.
-	// This is useful for obtaining label values for other postings than the ones you wish to exclude.
-	LabelValuesExcluding(p index.Postings, name string) storage.LabelValues
-
-	// LabelNamesFor returns all the label names for the series referred to by the postings.
+	// LabelNamesFor returns all the label names for the series referred to by IDs.
 	// The names returned are sorted.
-	LabelNamesFor(ctx context.Context, postings index.Postings) ([]string, error)
+	LabelNamesFor(ctx context.Context, ids ...storage.SeriesRef) ([]string, error)
 
 	// Close releases the underlying resources of the reader.
 	Close() error
@@ -194,9 +180,6 @@ type BlockMeta struct {
 
 	// Version of the index format.
 	Version int `json:"version"`
-
-	// OutOfOrder is true if the block was directly created from out-of-order samples.
-	OutOfOrder bool `json:"out_of_order"`
 }
 
 // BlockStats contains stats about contents of a block.
@@ -347,11 +330,6 @@ type Block struct {
 // OpenBlock opens the block in the directory. It can be passed a chunk pool, which is used
 // to instantiate chunk structs.
 func OpenBlock(logger log.Logger, dir string, pool chunkenc.Pool) (pb *Block, err error) {
-	return OpenBlockWithOptions(logger, dir, pool, nil, DefaultPostingsForMatchersCacheTTL, DefaultPostingsForMatchersCacheMaxItems, DefaultPostingsForMatchersCacheMaxBytes, DefaultPostingsForMatchersCacheForce)
-}
-
-// OpenBlockWithOptions is like OpenBlock but allows to pass a cache provider and sharding function.
-func OpenBlockWithOptions(logger log.Logger, dir string, pool chunkenc.Pool, cache index.ReaderCacheProvider, postingsCacheTTL time.Duration, postingsCacheMaxItems int, postingsCacheMaxBytes int64, postingsCacheForce bool) (pb *Block, err error) {
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
@@ -372,12 +350,10 @@ func OpenBlockWithOptions(logger log.Logger, dir string, pool chunkenc.Pool, cac
 	}
 	closers = append(closers, cr)
 
-	indexReader, err := index.NewFileReaderWithOptions(filepath.Join(dir, indexFilename), cache)
+	ir, err := index.NewFileReader(filepath.Join(dir, indexFilename))
 	if err != nil {
 		return nil, err
 	}
-	pfmc := NewPostingsForMatchersCache(postingsCacheTTL, postingsCacheMaxItems, postingsCacheMaxBytes, postingsCacheForce)
-	ir := indexReaderWithPostingsForMatchers{indexReader, pfmc}
 	closers = append(closers, ir)
 
 	tr, sizeTomb, err := tombstones.ReadTombstones(dir)
@@ -550,27 +526,12 @@ func (r blockIndexReader) PostingsForLabelMatching(ctx context.Context, name str
 	return r.ir.PostingsForLabelMatching(ctx, name, match)
 }
 
-func (r blockIndexReader) PostingsForMatchers(ctx context.Context, concurrent bool, ms ...*labels.Matcher) (index.Postings, error) {
-	return r.ir.PostingsForMatchers(ctx, concurrent, ms...)
-}
-
 func (r blockIndexReader) SortedPostings(p index.Postings) index.Postings {
 	return r.ir.SortedPostings(p)
 }
 
 func (r blockIndexReader) ShardedPostings(p index.Postings, shardIndex, shardCount uint64) index.Postings {
 	return r.ir.ShardedPostings(p, shardIndex, shardCount)
-}
-
-// LabelValuesFor returns LabelValues for the given label name in the series referred to by postings.
-func (r blockIndexReader) LabelValuesFor(postings index.Postings, name string) storage.LabelValues {
-	return r.ir.LabelValuesFor(postings, name)
-}
-
-// LabelValuesExcluding returns LabelValues for the given label name in all other series than those referred to by postings.
-// This is useful for obtaining label values for other postings than the ones you wish to exclude.
-func (r blockIndexReader) LabelValuesExcluding(postings index.Postings, name string) storage.LabelValues {
-	return r.ir.LabelValuesExcluding(postings, name)
 }
 
 func (r blockIndexReader) Series(ref storage.SeriesRef, builder *labels.ScratchBuilder, chks *[]chunks.Meta) error {
@@ -590,10 +551,10 @@ func (r blockIndexReader) LabelValueFor(ctx context.Context, id storage.SeriesRe
 	return r.ir.LabelValueFor(ctx, id, label)
 }
 
-// LabelNamesFor returns all the label names for the series referred to by the postings.
+// LabelNamesFor returns all the label names for the series referred to by IDs.
 // The names returned are sorted.
-func (r blockIndexReader) LabelNamesFor(ctx context.Context, postings index.Postings) ([]string, error) {
-	return r.ir.LabelNamesFor(ctx, postings)
+func (r blockIndexReader) LabelNamesFor(ctx context.Context, ids ...storage.SeriesRef) ([]string, error) {
+	return r.ir.LabelNamesFor(ctx, ids...)
 }
 
 type blockTombstoneReader struct {
@@ -625,7 +586,7 @@ func (pb *Block) Delete(ctx context.Context, mint, maxt int64, ms ...*labels.Mat
 		return ErrClosing
 	}
 
-	p, err := pb.indexr.PostingsForMatchers(ctx, false, ms...)
+	p, err := PostingsForMatchers(ctx, pb.indexr, ms...)
 	if err != nil {
 		return fmt.Errorf("select series: %w", err)
 	}
@@ -685,10 +646,10 @@ Outer:
 }
 
 // CleanTombstones will remove the tombstones and rewrite the block (only if there are any tombstones).
-// If there was a rewrite, then it returns the ULID of new blocks written, else nil.
-// If a resultant block is empty (tombstones covered the whole block), then it returns an empty slice.
+// If there was a rewrite, then it returns the ULID of the new block written, else nil.
+// If the resultant block is empty (tombstones covered the whole block), then it deletes the new block and return nil UID.
 // It returns a boolean indicating if the parent block can be deleted safely of not.
-func (pb *Block) CleanTombstones(dest string, c Compactor) ([]ulid.ULID, bool, error) {
+func (pb *Block) CleanTombstones(dest string, c Compactor) (*ulid.ULID, bool, error) {
 	numStones := 0
 
 	if err := pb.tombstones.Iter(func(id storage.SeriesRef, ivs tombstones.Intervals) error {
@@ -703,12 +664,12 @@ func (pb *Block) CleanTombstones(dest string, c Compactor) ([]ulid.ULID, bool, e
 	}
 
 	meta := pb.Meta()
-	uids, err := c.Write(dest, pb, pb.meta.MinTime, pb.meta.MaxTime, &meta)
+	uid, err := c.Write(dest, pb, pb.meta.MinTime, pb.meta.MaxTime, &meta)
 	if err != nil {
 		return nil, false, err
 	}
 
-	return uids, true, nil
+	return &uid, true, nil
 }
 
 // Snapshot creates snapshot of the block into dir.

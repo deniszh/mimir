@@ -18,7 +18,6 @@ import (
 	"errors"
 	"math"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -51,7 +50,6 @@ type Group struct {
 	queryOffset          *time.Duration
 	limit                int
 	rules                []Rule
-	sourceTenants        []string
 	seriesInPreviousEval []map[string]labels.Labels // One per Rule.
 	staleSeries          []labels.Labels
 	opts                 *ManagerOptions
@@ -77,8 +75,6 @@ type Group struct {
 
 	// concurrencyController controls the rules evaluation concurrency.
 	concurrencyController RuleConcurrencyController
-
-	alignEvaluationTimeOnInterval bool
 }
 
 // GroupEvalIterationFunc is used to implement and extend rule group
@@ -89,17 +85,15 @@ type Group struct {
 type GroupEvalIterationFunc func(ctx context.Context, g *Group, evalTimestamp time.Time)
 
 type GroupOptions struct {
-	Name, File                    string
-	Interval                      time.Duration
-	Limit                         int
-	Rules                         []Rule
-	SourceTenants                 []string
-	ShouldRestore                 bool
-	Opts                          *ManagerOptions
-	QueryOffset                   *time.Duration
-	done                          chan struct{}
-	EvalIterationFunc             GroupEvalIterationFunc
-	AlignEvaluationTimeOnInterval bool
+	Name, File        string
+	Interval          time.Duration
+	Limit             int
+	Rules             []Rule
+	ShouldRestore     bool
+	Opts              *ManagerOptions
+	QueryOffset       *time.Duration
+	done              chan struct{}
+	EvalIterationFunc GroupEvalIterationFunc
 }
 
 // NewGroup makes a new Group with the given name, options, and rules.
@@ -139,7 +133,6 @@ func NewGroup(o GroupOptions) *Group {
 		rules:                 o.Rules,
 		shouldRestore:         o.ShouldRestore,
 		opts:                  o.Opts,
-		sourceTenants:         o.SourceTenants,
 		seriesInPreviousEval:  make([]map[string]labels.Labels, len(o.Rules)),
 		done:                  make(chan struct{}),
 		managerDone:           o.done,
@@ -148,8 +141,6 @@ func NewGroup(o GroupOptions) *Group {
 		metrics:               metrics,
 		evalIterationFunc:     evalIterationFunc,
 		concurrencyController: concurrencyController,
-
-		alignEvaluationTimeOnInterval: o.AlignEvaluationTimeOnInterval,
 	}
 }
 
@@ -160,42 +151,7 @@ func (g *Group) Name() string { return g.name }
 func (g *Group) File() string { return g.file }
 
 // Rules returns the group's rules.
-func (g *Group) Rules(matcherSets ...[]*labels.Matcher) []Rule {
-	if len(matcherSets) == 0 {
-		return g.rules
-	}
-	var rules []Rule
-	for _, rule := range g.rules {
-		if matchesMatcherSets(matcherSets, rule.Labels()) {
-			rules = append(rules, rule)
-		}
-	}
-	return rules
-}
-
-func matches(lbls labels.Labels, matchers ...*labels.Matcher) bool {
-	for _, m := range matchers {
-		if v := lbls.Get(m.Name); !m.Matches(v) {
-			return false
-		}
-	}
-	return true
-}
-
-// matchesMatcherSets ensures all matches in each matcher set are ANDed and the set of those is ORed.
-func matchesMatcherSets(matcherSets [][]*labels.Matcher, lbls labels.Labels) bool {
-	if len(matcherSets) == 0 {
-		return true
-	}
-
-	var ok bool
-	for _, matchers := range matcherSets {
-		if matches(lbls, matchers...) {
-			ok = true
-		}
-	}
-	return ok
-}
+func (g *Group) Rules() []Rule { return g.rules }
 
 // Queryable returns the group's querable.
 func (g *Group) Queryable() storage.Queryable { return g.opts.Queryable }
@@ -208,10 +164,6 @@ func (g *Group) Interval() time.Duration { return g.interval }
 
 // Limit returns the group's limit.
 func (g *Group) Limit() int { return g.limit }
-
-// SourceTenants returns the source tenants for the group.
-// If it's empty or nil, then the owning user/tenant is considered to be the source tenant.
-func (g *Group) SourceTenants() []string { return g.sourceTenants }
 
 func (g *Group) Logger() log.Logger { return g.logger }
 
@@ -405,11 +357,9 @@ func (g *Group) setLastEvalTimestamp(ts time.Time) {
 
 // EvalTimestamp returns the immediately preceding consistently slotted evaluation time.
 func (g *Group) EvalTimestamp(startTime int64) time.Time {
-	var offset int64
-	if !g.alignEvaluationTimeOnInterval {
-		offset = int64(g.hash() % uint64(g.interval))
-	}
 	var (
+		offset = int64(g.hash() % uint64(g.interval))
+
 		// This group's evaluation times differ from the perfect time intervals by `offset` nanoseconds.
 		// But we can only use `% interval` to align with the interval. And `% interval` will always
 		// align with the perfect time intervals, instead of this group's. Because of this we add
@@ -494,9 +444,9 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 	var (
 		samplesTotal atomic.Float64
 		wg           sync.WaitGroup
-
-		ruleQueryOffset = g.QueryOffset()
 	)
+
+	ruleQueryOffset := g.QueryOffset()
 
 	for i, rule := range g.rules {
 		select {
@@ -589,13 +539,13 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 					switch {
 					case errors.Is(unwrappedErr, storage.ErrOutOfOrderSample):
 						numOutOfOrder++
-						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
+						level.Debug(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
 					case errors.Is(unwrappedErr, storage.ErrTooOldSample):
 						numTooOld++
-						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
+						level.Debug(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
 					case errors.Is(unwrappedErr, storage.ErrDuplicateSampleForTimestamp):
 						numDuplicates++
-						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
+						level.Debug(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
 					default:
 						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
 					}
@@ -636,12 +586,14 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			}
 		}
 
-		if ctrl := g.concurrencyController; ctrl.Allow(ctx, g, rule) {
+		// If the rule has no dependencies, it can run concurrently because no other rules in this group depend on its output.
+		// Try run concurrently if there are slots available.
+		if ctrl := g.concurrencyController; isRuleEligibleForConcurrentExecution(rule) && ctrl.Allow() {
 			wg.Add(1)
 
 			go eval(i, rule, func() {
 				wg.Done()
-				ctrl.Done(ctx)
+				ctrl.Done()
 			})
 		} else {
 			eval(i, rule, nil)
@@ -849,35 +801,9 @@ func (g *Group) Equals(ng *Group) bool {
 		return false
 	}
 
-	if g.alignEvaluationTimeOnInterval != ng.alignEvaluationTimeOnInterval {
-		return false
-	}
-
 	for i, gr := range g.rules {
 		if gr.String() != ng.rules[i].String() {
 			return false
-		}
-	}
-	{
-		// compare source tenants
-		if len(g.sourceTenants) != len(ng.sourceTenants) {
-			return false
-		}
-
-		copyAndSort := func(x []string) []string {
-			copied := make([]string, len(x))
-			copy(copied, x)
-			sort.Strings(copied)
-			return copied
-		}
-
-		ngSourceTenantsCopy := copyAndSort(ng.sourceTenants)
-		gSourceTenantsCopy := copyAndSort(g.sourceTenants)
-
-		for i := range ngSourceTenantsCopy {
-			if gSourceTenantsCopy[i] != ngSourceTenantsCopy[i] {
-				return false
-			}
 		}
 	}
 
@@ -1132,4 +1058,8 @@ func buildDependencyMap(rules []Rule) dependencyMap {
 	}
 
 	return dependencies
+}
+
+func isRuleEligibleForConcurrentExecution(rule Rule) bool {
+	return rule.NoDependentRules() && rule.NoDependencyRules()
 }

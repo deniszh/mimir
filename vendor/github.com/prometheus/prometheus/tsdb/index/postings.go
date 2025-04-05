@@ -24,7 +24,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/bboreham/go-loser"
 
@@ -289,56 +288,62 @@ func (p *MemPostings) EnsureOrder(numberOfConcurrentProcesses int) {
 }
 
 // Delete removes all ids in the given map from the postings lists.
-// affectedLabels contains all the labels that are affected by the deletion, there's no need to check other labels.
-func (p *MemPostings) Delete(deleted map[storage.SeriesRef]struct{}, affected map[labels.Label]struct{}) {
-	p.mtx.Lock()
-	defer p.mtx.Unlock()
+func (p *MemPostings) Delete(deleted map[storage.SeriesRef]struct{}) {
+	var keys, vals []string
 
-	process := func(l labels.Label) {
-		orig := p.m[l.Name][l.Value]
-		repl := make([]storage.SeriesRef, 0, len(orig))
-		for _, id := range orig {
-			if _, ok := deleted[id]; !ok {
-				repl = append(repl, id)
-			}
-		}
-		if len(repl) > 0 {
-			p.m[l.Name][l.Value] = repl
-		} else {
-			delete(p.m[l.Name], l.Value)
-			// Delete the key if we removed all values.
-			if len(p.m[l.Name]) == 0 {
-				delete(p.m, l.Name)
-			}
-		}
+	// Collect all keys relevant for deletion once. New keys added afterwards
+	// can by definition not be affected by any of the given deletes.
+	p.mtx.RLock()
+	for n := range p.m {
+		keys = append(keys, n)
 	}
+	p.mtx.RUnlock()
 
-	i := 0
-	for l := range affected {
-		i++
-		process(l)
+	for _, n := range keys {
+		p.mtx.RLock()
+		vals = vals[:0]
+		for v := range p.m[n] {
+			vals = append(vals, v)
+		}
+		p.mtx.RUnlock()
 
-		// From time to time we want some readers to go through and read their postings.
-		// It takes around 50ms to process a 1K series batch, and 120ms to process a 10K series batch (local benchmarks on an M3).
-		// Note that a read query will most likely want to read multiple postings lists, say 5, 10 or 20 (depending on the number of matchers)
-		// And that read query will most likely evaluate only one of those matchers before we unpause here, so we want to pause often.
-		if i%512 == 0 {
-			p.mtx.Unlock()
-			// While it's tempting to just do a `time.Sleep(time.Millisecond)` here,
-			// it wouldn't ensure use that readers actually were able to get the read lock,
-			// because if there are writes waiting on same mutex, readers won't be able to get it.
-			// So we just grab one RLock ourselves.
-			p.mtx.RLock()
-			// We shouldn't wait here, because we would be blocking a potential write for no reason.
-			// Note that if there's a writer waiting for us to unlock, no reader will be able to get the read lock.
-			p.mtx.RUnlock() //nolint:staticcheck // SA2001: this is an intentionally empty critical section.
-			// Now we can wait a little bit just to increase the chance of a reader getting the lock.
-			// If we were deleting 100M series here, pausing every 512 with 1ms sleeps would be an extra of 200s, which is negligible.
-			time.Sleep(time.Millisecond)
+		// For each posting we first analyse whether the postings list is affected by the deletes.
+		// If yes, we actually reallocate a new postings list.
+		for _, l := range vals {
+			// Only lock for processing one postings list so we don't block reads for too long.
 			p.mtx.Lock()
+
+			found := false
+			for _, id := range p.m[n][l] {
+				if _, ok := deleted[id]; ok {
+					found = true
+					break
+				}
+			}
+			if !found {
+				p.mtx.Unlock()
+				continue
+			}
+			repl := make([]storage.SeriesRef, 0, len(p.m[n][l]))
+
+			for _, id := range p.m[n][l] {
+				if _, ok := deleted[id]; !ok {
+					repl = append(repl, id)
+				}
+			}
+			if len(repl) > 0 {
+				p.m[n][l] = repl
+			} else {
+				delete(p.m[n], l)
+			}
+			p.mtx.Unlock()
 		}
+		p.mtx.Lock()
+		if len(p.m[n]) == 0 {
+			delete(p.m, n)
+		}
+		p.mtx.Unlock()
 	}
-	process(allPostingsKey)
 }
 
 // Iter calls f for each postings list. It aborts if f returns an error and returns it.
@@ -393,62 +398,16 @@ func (p *MemPostings) addFor(id storage.SeriesRef, l labels.Label) {
 }
 
 func (p *MemPostings) PostingsForLabelMatching(ctx context.Context, name string, match func(string) bool) Postings {
-	// We'll copy the values into a slice and then match over that,
-	// this way we don't need to hold the mutex while we're matching,
-	// which can be slow (seconds) if the match function is a huge regex.
-	// Holding this lock prevents new series from being added (slows down the write path)
-	// and blocks the compaction process.
-	vals := p.labelValues(name)
-	for i, count := 0, 1; i < len(vals); count++ {
-		if count%checkContextEveryNIterations == 0 && ctx.Err() != nil {
-			return ErrPostings(ctx.Err())
-		}
-
-		if match(vals[i]) {
-			i++
-			continue
-		}
-
-		// Didn't match, bring the last value to this position, make the slice shorter and check again.
-		// The order of the slice doesn't matter as it comes from a map iteration.
-		vals[i], vals = vals[len(vals)-1], vals[:len(vals)-1]
-	}
-
-	// If none matched (or this label had no values), no need to grab the lock again.
-	if len(vals) == 0 {
-		return EmptyPostings()
-	}
-
-	// Now `vals` only contains the values that matched, get their postings.
-	its := make([]Postings, 0, len(vals))
 	p.mtx.RLock()
-	e := p.m[name]
-	for _, v := range vals {
-		if refs, ok := e[v]; ok {
-			// Some of the values may have been garbage-collected in the meantime this is fine, we'll just skip them.
-			// If we didn't let the mutex go, we'd have these postings here, but they would be pointing nowhere
-			// because there would be a `MemPostings.Delete()` call waiting for the lock to delete these labels,
-			// because the series were deleted already.
-			its = append(its, NewListPostings(refs))
-		}
-	}
-	// Let the mutex go before merging.
-	p.mtx.RUnlock()
-
-	return Merge(ctx, its...)
-}
-
-// labelValues returns a slice of label values for the given label name.
-// It will take the read lock.
-func (p *MemPostings) labelValues(name string) []string {
-	p.mtx.RLock()
-	defer p.mtx.RUnlock()
 
 	e := p.m[name]
 	if len(e) == 0 {
-		return nil
+		p.mtx.RUnlock()
+		return EmptyPostings()
 	}
 
+	// Benchmarking shows that first copying the values into a slice and then matching over that is
+	// faster than matching over the map keys directly, at least on AMD64.
 	vals := make([]string, 0, len(e))
 	for v, srs := range e {
 		if len(srs) > 0 {
@@ -456,7 +415,21 @@ func (p *MemPostings) labelValues(name string) []string {
 		}
 	}
 
-	return vals
+	var its []Postings
+	count := 1
+	for _, v := range vals {
+		if count%checkContextEveryNIterations == 0 && ctx.Err() != nil {
+			p.mtx.RUnlock()
+			return ErrPostings(ctx.Err())
+		}
+		count++
+		if match(v) {
+			its = append(its, NewListPostings(e[v]))
+		}
+	}
+	p.mtx.RUnlock()
+
+	return Merge(ctx, its...)
 }
 
 // ExpandPostings returns the postings expanded as a slice.
@@ -778,7 +751,9 @@ func (it *ListPostings) Seek(x storage.SeriesRef) bool {
 	}
 
 	// Do binary search between current position and end.
-	i, _ := slices.BinarySearch(it.list, x)
+	i := sort.Search(len(it.list), func(i int) bool {
+		return it.list[i] >= x
+	})
 	if i < len(it.list) {
 		it.cur = it.list[i]
 		it.list = it.list[i+1:]
@@ -840,28 +815,6 @@ func (it *bigEndianPostings) Err() error {
 	return nil
 }
 
-// PostingsCloner takes an existing Postings and allows independently clone them.
-type PostingsCloner struct {
-	ids []storage.SeriesRef
-	err error
-}
-
-// NewPostingsCloner takes an existing Postings and allows independently clone them.
-// The instance provided shouldn't have been used before (no Next() calls should have been done)
-// and it shouldn't be used once provided to the PostingsCloner.
-func NewPostingsCloner(p Postings) *PostingsCloner {
-	ids, err := ExpandPostings(p)
-	return &PostingsCloner{ids: ids, err: err}
-}
-
-// Clone returns another independent Postings instance.
-func (c *PostingsCloner) Clone() Postings {
-	if c.err != nil {
-		return ErrPostings(c.err)
-	}
-	return newListPostings(c.ids...)
-}
-
 // FindIntersectingPostings checks the intersection of p and candidates[i] for each i in candidates,
 // if intersection is non empty, then i is added to the indexes returned.
 // Returned indexes are not sorted.
@@ -885,42 +838,6 @@ func FindIntersectingPostings(p Postings, candidates []Postings) (indexes []int,
 			return indexes, p.Err()
 		}
 		if p.At() == h.at() {
-			indexes = append(indexes, h.popIndex())
-		} else if err := h.next(); err != nil {
-			return nil, err
-		}
-	}
-
-	return indexes, nil
-}
-
-// findNonContainedPostings checks whether candidates[i] for each i in candidates is contained in p.
-// If not contained, i is added to the indexes returned.
-// The idea is the need to find postings iterators not fully contained in a set you wish to exclude.
-// Returned indexes are not sorted.
-func findNonContainedPostings(p Postings, candidates []Postings) (indexes []int, err error) {
-	h := make(postingsWithIndexHeap, 0, len(candidates))
-	for idx, it := range candidates {
-		switch {
-		case it.Next():
-			h = append(h, postingsWithIndex{index: idx, p: it})
-		case it.Err() != nil:
-			return nil, it.Err()
-		}
-	}
-	if h.empty() {
-		return nil, nil
-	}
-	heap.Init(&h)
-
-	for !h.empty() {
-		// Find the first posting >= h.at()
-		if !p.Seek(h.at()) && p.Err() != nil {
-			return nil, p.Err()
-		}
-
-		// If p.At() != h.at(), we can keep h.at(), otherwise we skip past it
-		if p.At() != h.at() {
 			indexes = append(indexes, h.popIndex())
 		} else if err := h.next(); err != nil {
 			return nil, err

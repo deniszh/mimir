@@ -122,11 +122,11 @@ type MockQuerier struct {
 	SelectMockFunction func(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) SeriesSet
 }
 
-func (q *MockQuerier) LabelValues(context.Context, string, *LabelHints, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+func (q *MockQuerier) LabelValues(context.Context, string, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	return nil, nil, nil
 }
 
-func (q *MockQuerier) LabelNames(context.Context, *LabelHints, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+func (q *MockQuerier) LabelNames(context.Context, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	return nil, nil, nil
 }
 
@@ -161,12 +161,12 @@ type LabelQuerier interface {
 	// It is not safe to use the strings beyond the lifetime of the querier.
 	// If matchers are specified the returned result set is reduced
 	// to label values of metrics matching the matchers.
-	LabelValues(ctx context.Context, name string, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
+	LabelValues(ctx context.Context, name string, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
 
 	// LabelNames returns all the unique label names present in the block in sorted order.
 	// If matchers are specified the returned result set is reduced
 	// to label names of metrics matching the matchers.
-	LabelNames(ctx context.Context, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
+	LabelNames(ctx context.Context, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error)
 
 	// Close releases the resources of the Querier.
 	Close() error
@@ -189,9 +189,6 @@ type ExemplarQuerier interface {
 type SelectHints struct {
 	Start int64 // Start time in milliseconds for this select.
 	End   int64 // End time in milliseconds for this select.
-
-	// Maximum number of results returned. Use a value of 0 to disable.
-	Limit int
 
 	Step int64  // Query step size in milliseconds.
 	Func string // String representation of surrounding function or aggregation.
@@ -220,16 +217,9 @@ type SelectHints struct {
 	DisableTrimming bool
 }
 
-// LabelHints specifies hints passed for label reads.
-// This is used only as an option for implementation to use.
-type LabelHints struct {
-	// Maximum number of results returned. Use a value of 0 to disable.
-	Limit int
-}
-
+// TODO(bwplotka): Move to promql/engine_test.go?
 // QueryableFunc is an adapter to allow the use of ordinary functions as
 // Queryables. It follows the idea of http.HandlerFunc.
-// TODO(bwplotka): Move to promql/engine_test.go?
 type QueryableFunc func(mint, maxt int64) (Querier, error)
 
 // Querier calls f() with the given parameters.
@@ -459,12 +449,6 @@ type ChunkSeriesSet interface {
 type ChunkSeries interface {
 	Labels
 	ChunkIterable
-
-	// ChunkCount returns the number of chunks available from this ChunkSeries.
-	//
-	// This value is used by Mimir's ingesters to report the number of chunks expected to be returned by a query,
-	// which is used by queriers to enforce the 'max chunks per query' limit.
-	ChunkCount() (int, error)
 }
 
 // Labels represents an item that has labels e.g. time series.
@@ -485,20 +469,4 @@ type ChunkIterable interface {
 	// Iterator returns an iterator that iterates over potentially overlapping
 	// chunks of the series, sorted by min time.
 	Iterator(chunks.Iterator) chunks.Iterator
-}
-
-// LabelValues is an iterator over label values in sorted order.
-type LabelValues interface {
-	// Next tries to advance the iterator and returns true if it could, false otherwise.
-	Next() bool
-	// At returns the current label value.
-	At() string
-	// Err is the error that iteration eventually failed with.
-	// When an error occurs, the iterator cannot continue.
-	Err() error
-	// Warnings is a collection of warnings that have occurred during iteration.
-	// Warnings could be non-empty even if iteration has not failed with an error.
-	Warnings() annotations.Annotations
-	// Close the iterator and release held resources. Can be called multiple times.
-	Close() error
 }

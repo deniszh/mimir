@@ -17,7 +17,6 @@
 package prometheusremotewrite
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -25,11 +24,10 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"time"
 	"unicode/utf8"
 
 	"github.com/cespare/xxhash/v2"
-	gokitlog "github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/prometheus/common/model"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -67,14 +65,14 @@ type bucketBoundsData struct {
 	bound float64
 }
 
-// byBucketBoundsData enables the usage of sort.Sort() with a slice of bucket bounds.
+// byBucketBoundsData enables the usage of sort.Sort() with a slice of bucket bounds
 type byBucketBoundsData []bucketBoundsData
 
 func (m byBucketBoundsData) Len() int           { return len(m) }
 func (m byBucketBoundsData) Less(i, j int) bool { return m[i].bound < m[j].bound }
 func (m byBucketBoundsData) Swap(i, j int)      { m[i], m[j] = m[j], m[i] }
 
-// ByLabelName enables the usage of sort.Sort() with a slice of labels.
+// ByLabelName enables the usage of sort.Sort() with a slice of labels
 type ByLabelName []prompb.Label
 
 func (a ByLabelName) Len() int           { return len(a) }
@@ -117,23 +115,14 @@ var seps = []byte{'\xff'}
 // createAttributes creates a slice of Prometheus Labels with OTLP attributes and pairs of string values.
 // Unpaired string values are ignored. String pairs overwrite OTLP labels if collisions happen and
 // if logOnOverwrite is true, the overwrite is logged. Resulting label names are sanitized.
-// If settings.PromoteResourceAttributes is not empty, it's a set of resource attributes that should be promoted to labels.
-func createAttributes(resource pcommon.Resource, attributes pcommon.Map, settings Settings,
+func createAttributes(resource pcommon.Resource, attributes pcommon.Map, externalLabels map[string]string,
 	ignoreAttrs []string, logOnOverwrite bool, extras ...string) []prompb.Label {
 	resourceAttrs := resource.Attributes()
 	serviceName, haveServiceName := resourceAttrs.Get(conventions.AttributeServiceName)
 	instance, haveInstanceID := resourceAttrs.Get(conventions.AttributeServiceInstanceID)
 
-	promotedAttrs := make([]prompb.Label, 0, len(settings.PromoteResourceAttributes))
-	for _, name := range settings.PromoteResourceAttributes {
-		if value, exists := resourceAttrs.Get(name); exists {
-			promotedAttrs = append(promotedAttrs, prompb.Label{Name: name, Value: value.AsString()})
-		}
-	}
-	sort.Stable(ByLabelName(promotedAttrs))
-
 	// Calculate the maximum possible number of labels we could return so we can preallocate l
-	maxLabelCount := attributes.Len() + len(settings.ExternalLabels) + len(promotedAttrs) + len(extras)/2
+	maxLabelCount := attributes.Len() + len(externalLabels) + len(extras)/2
 
 	if haveServiceName {
 		maxLabelCount++
@@ -142,6 +131,9 @@ func createAttributes(resource pcommon.Resource, attributes pcommon.Map, setting
 	if haveInstanceID {
 		maxLabelCount++
 	}
+
+	// map ensures no duplicate label name
+	l := make(map[string]string, maxLabelCount)
 
 	// Ensure attributes are sorted by key for consistent merging of keys which
 	// collide when sanitized.
@@ -156,21 +148,12 @@ func createAttributes(resource pcommon.Resource, attributes pcommon.Map, setting
 	})
 	sort.Stable(ByLabelName(labels))
 
-	// map ensures no duplicate label names.
-	l := make(map[string]string, maxLabelCount)
 	for _, label := range labels {
 		var finalKey = prometheustranslator.NormalizeLabel(label.Name)
 		if existingValue, alreadyExists := l[finalKey]; alreadyExists {
 			l[finalKey] = existingValue + ";" + label.Value
 		} else {
 			l[finalKey] = label.Value
-		}
-	}
-
-	for _, lbl := range promotedAttrs {
-		normalized := prometheustranslator.NormalizeLabel(lbl.Name)
-		if _, exists := l[normalized]; !exists {
-			l[normalized] = lbl.Value
 		}
 	}
 
@@ -186,7 +169,7 @@ func createAttributes(resource pcommon.Resource, attributes pcommon.Map, setting
 	if haveInstanceID {
 		l[model.InstanceLabel] = instance.AsString()
 	}
-	for key, value := range settings.ExternalLabels {
+	for key, value := range externalLabels {
 		// External labels have already been sanitized
 		if _, alreadyExists := l[key]; alreadyExists {
 			// Skip external labels if they are overridden by metric attributes
@@ -199,13 +182,12 @@ func createAttributes(resource pcommon.Resource, attributes pcommon.Map, setting
 		if i+1 >= len(extras) {
 			break
 		}
-
-		name := extras[i]
-		_, found := l[name]
+		_, found := l[extras[i]]
 		if found && logOnOverwrite {
-			log.Println("label " + name + " is overwritten. Check if Prometheus reserved labels are used.")
+			log.Println("label " + extras[i] + " is overwritten. Check if Prometheus reserved labels are used.")
 		}
 		// internal labels should be maintained
+		name := extras[i]
 		if !(len(name) > 4 && name[:2] == "__" && name[len(name)-2:] == "__") {
 			name = prometheustranslator.NormalizeLabel(name)
 		}
@@ -237,31 +219,17 @@ func isValidAggregationTemporality(metric pmetric.Metric) bool {
 	return false
 }
 
-// addHistogramDataPoints adds OTel histogram data points to the corresponding Prometheus time series
-// as classical histogram samples.
-//
-// Note that we can't convert to native histograms, since these have exponential buckets and don't line up
-// with the user defined bucket boundaries of non-exponential OTel histograms.
-// However, work is under way to resolve this shortcoming through a feature called native histograms custom buckets:
-// https://github.com/prometheus/prometheus/issues/13485.
-func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPoints pmetric.HistogramDataPointSlice,
-	resource pcommon.Resource, settings Settings, baseName string, logger gokitlog.Logger) error {
+func (c *PrometheusConverter) addHistogramDataPoints(dataPoints pmetric.HistogramDataPointSlice,
+	resource pcommon.Resource, settings Settings, baseName string) {
 	for x := 0; x < dataPoints.Len(); x++ {
-		if err := c.everyN.checkContext(ctx); err != nil {
-			return err
-		}
-
 		pt := dataPoints.At(x)
 		timestamp := convertTimeStamp(pt.Timestamp())
-		startTimestampNs := pt.StartTimestamp()
-		startTimestampMs := convertTimeStamp(startTimestampNs)
-		baseLabels := createAttributes(resource, pt.Attributes(), settings, nil, false)
+		baseLabels := createAttributes(resource, pt.Attributes(), settings.ExternalLabels, nil, false)
 
 		// If the sum is unset, it indicates the _sum metric point should be
 		// omitted
 		if pt.HasSum() {
 			// treat sum as a sample in an individual TimeSeries
-			sumlabels := createLabels(baseName+sumStr, baseLabels)
 			sum := &prompb.Sample{
 				Value:     pt.Sum(),
 				Timestamp: timestamp,
@@ -270,7 +238,7 @@ func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPo
 				sum.Value = math.Float64frombits(value.StaleNaN)
 			}
 
-			c.handleStartTime(startTimestampMs, timestamp, sumlabels, settings, "histogram_sum", sum.Value, logger)
+			sumlabels := createLabels(baseName+sumStr, baseLabels)
 			c.addSample(sum, sumlabels)
 
 		}
@@ -285,7 +253,6 @@ func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPo
 		}
 
 		countlabels := createLabels(baseName+countStr, baseLabels)
-		c.handleStartTime(startTimestampMs, timestamp, countlabels, settings, "histogram_count", count.Value, logger)
 		c.addSample(count, countlabels)
 
 		// cumulative count for conversion to cumulative histogram
@@ -295,10 +262,6 @@ func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPo
 
 		// process each bound, based on histograms proto definition, # of buckets = # of explicit bounds + 1
 		for i := 0; i < pt.ExplicitBounds().Len() && i < pt.BucketCounts().Len(); i++ {
-			if err := c.everyN.checkContext(ctx); err != nil {
-				return err
-			}
-
 			bound := pt.ExplicitBounds().At(i)
 			cumulativeCount += pt.BucketCounts().At(i)
 			bucket := &prompb.Sample{
@@ -310,7 +273,6 @@ func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPo
 			}
 			boundStr := strconv.FormatFloat(bound, 'f', -1, 64)
 			labels := createLabels(baseName+bucketStr, baseLabels, leStr, boundStr)
-			c.handleStartTime(startTimestampMs, timestamp, labels, settings, "histogram_bucket", bucket.Value, logger)
 			ts := c.addSample(bucket, labels)
 
 			bucketBounds = append(bucketBounds, bucketBoundsData{ts: ts, bound: bound})
@@ -325,22 +287,17 @@ func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPo
 			infBucket.Value = float64(pt.Count())
 		}
 		infLabels := createLabels(baseName+bucketStr, baseLabels, leStr, pInfStr)
-		c.handleStartTime(startTimestampMs, timestamp, infLabels, settings, "histogram_inf_bucket", infBucket.Value, logger)
 		ts := c.addSample(infBucket, infLabels)
 
 		bucketBounds = append(bucketBounds, bucketBoundsData{ts: ts, bound: math.Inf(1)})
-		if err := c.addExemplars(ctx, pt, bucketBounds); err != nil {
-			return err
-		}
+		c.addExemplars(pt, bucketBounds)
 
-		if settings.ExportCreatedMetric && startTimestampNs != 0 {
+		startTimestamp := pt.StartTimestamp()
+		if settings.ExportCreatedMetric && startTimestamp != 0 {
 			labels := createLabels(baseName+createdSuffix, baseLabels)
-			c.addTimeSeriesIfNeeded(labels, startTimestampMs, pt.Timestamp())
+			c.addTimeSeriesIfNeeded(labels, startTimestamp, pt.Timestamp())
 		}
-		level.Debug(logger).Log("labels", labelsStringer(createLabels(baseName, baseLabels)), "start_ts", startTimestampMs, "sample_ts", timestamp, "type", "histogram")
 	}
-
-	return nil
 }
 
 type exemplarType interface {
@@ -348,13 +305,9 @@ type exemplarType interface {
 	Exemplars() pmetric.ExemplarSlice
 }
 
-func getPromExemplars[T exemplarType](ctx context.Context, everyN *everyNTimes, pt T) ([]prompb.Exemplar, error) {
+func getPromExemplars[T exemplarType](pt T) []prompb.Exemplar {
 	promExemplars := make([]prompb.Exemplar, 0, pt.Exemplars().Len())
 	for i := 0; i < pt.Exemplars().Len(); i++ {
-		if err := everyN.checkContext(ctx); err != nil {
-			return nil, err
-		}
-
 		exemplar := pt.Exemplars().At(i)
 		exemplarRunes := 0
 
@@ -404,7 +357,7 @@ func getPromExemplars[T exemplarType](ctx context.Context, everyN *everyNTimes, 
 		promExemplars = append(promExemplars, promExemplar)
 	}
 
-	return promExemplars, nil
+	return promExemplars
 }
 
 // mostRecentTimestampInMetric returns the latest timestamp in a batch of metrics
@@ -442,17 +395,12 @@ func mostRecentTimestampInMetric(metric pmetric.Metric) pcommon.Timestamp {
 	return ts
 }
 
-func (c *PrometheusConverter) addSummaryDataPoints(ctx context.Context, dataPoints pmetric.SummaryDataPointSlice, resource pcommon.Resource,
-	settings Settings, baseName string, logger gokitlog.Logger) error {
+func (c *PrometheusConverter) addSummaryDataPoints(dataPoints pmetric.SummaryDataPointSlice, resource pcommon.Resource,
+	settings Settings, baseName string) {
 	for x := 0; x < dataPoints.Len(); x++ {
-		if err := c.everyN.checkContext(ctx); err != nil {
-			return err
-		}
-
 		pt := dataPoints.At(x)
 		timestamp := convertTimeStamp(pt.Timestamp())
-		startTimestampMs := convertTimeStamp(pt.StartTimestamp())
-		baseLabels := createAttributes(resource, pt.Attributes(), settings, nil, false)
+		baseLabels := createAttributes(resource, pt.Attributes(), settings.ExternalLabels, nil, false)
 
 		// treat sum as a sample in an individual TimeSeries
 		sum := &prompb.Sample{
@@ -464,7 +412,6 @@ func (c *PrometheusConverter) addSummaryDataPoints(ctx context.Context, dataPoin
 		}
 		// sum and count of the summary should append suffix to baseName
 		sumlabels := createLabels(baseName+sumStr, baseLabels)
-		c.handleStartTime(startTimestampMs, timestamp, sumlabels, settings, "summary_sum", sum.Value, logger)
 		c.addSample(sum, sumlabels)
 
 		// treat count as a sample in an individual TimeSeries
@@ -476,7 +423,6 @@ func (c *PrometheusConverter) addSummaryDataPoints(ctx context.Context, dataPoin
 			count.Value = math.Float64frombits(value.StaleNaN)
 		}
 		countlabels := createLabels(baseName+countStr, baseLabels)
-		c.handleStartTime(startTimestampMs, timestamp, countlabels, settings, "summary_count", count.Value, logger)
 		c.addSample(count, countlabels)
 
 		// process each percentile/quantile
@@ -491,19 +437,15 @@ func (c *PrometheusConverter) addSummaryDataPoints(ctx context.Context, dataPoin
 			}
 			percentileStr := strconv.FormatFloat(qt.Quantile(), 'f', -1, 64)
 			qtlabels := createLabels(baseName, baseLabels, quantileStr, percentileStr)
-			c.handleStartTime(startTimestampMs, timestamp, qtlabels, settings, "summary_quantile", quantile.Value, logger)
 			c.addSample(quantile, qtlabels)
 		}
 
-		if settings.ExportCreatedMetric && startTimestampMs != 0 {
+		startTimestamp := pt.StartTimestamp()
+		if settings.ExportCreatedMetric && startTimestamp != 0 {
 			createdLabels := createLabels(baseName+createdSuffix, baseLabels)
-			c.addTimeSeriesIfNeeded(createdLabels, startTimestampMs, pt.Timestamp())
+			c.addTimeSeriesIfNeeded(createdLabels, startTimestamp, pt.Timestamp())
 		}
-
-		level.Debug(logger).Log("labels", labelsStringer(createLabels(baseName, baseLabels)), "start_ts", startTimestampMs, "sample_ts", timestamp, "type", "summary")
 	}
-
-	return nil
 }
 
 // createLabels returns a copy of baseLabels, adding to it the pair model.MetricNameLabel=name.
@@ -562,69 +504,17 @@ func (c *PrometheusConverter) getOrCreateTimeSeries(lbls []prompb.Label) (*promp
 // addTimeSeriesIfNeeded adds a corresponding time series if it doesn't already exist.
 // If the time series doesn't already exist, it gets added with startTimestamp for its value and timestamp for its timestamp,
 // both converted to milliseconds.
-func (c *PrometheusConverter) addTimeSeriesIfNeeded(lbls []prompb.Label, startTimestamp int64, timestamp pcommon.Timestamp) {
+func (c *PrometheusConverter) addTimeSeriesIfNeeded(lbls []prompb.Label, startTimestamp pcommon.Timestamp, timestamp pcommon.Timestamp) {
 	ts, created := c.getOrCreateTimeSeries(lbls)
 	if created {
 		ts.Samples = []prompb.Sample{
 			{
-				Value:     float64(startTimestamp),
+				// convert ns to ms
+				Value:     float64(convertTimeStamp(startTimestamp)),
 				Timestamp: convertTimeStamp(timestamp),
 			},
 		}
 	}
-}
-
-// validIntervalForStartTimestamps is hardcoded to 2 minutes in milliseconds. We can't know in advance whats the scrape
-// interval of a series.
-const validIntervalForStartTimestamps = 120_000
-
-// handleStartTime adds a zero sample at startTs only if startTs is within validIntervalForStartTimestamps of the sample timestamp.
-// The reason for doing this is that PRW v1 doesn't support Created Timestamps. After switching to PRW v2's direct CT support,
-// make use of its direct support fort Created Timestamps instead.
-// See https://opentelemetry.io/docs/specs/otel/metrics/data-model/#resets-and-gaps to know more about how OTel handles
-// resets for cumulative metrics.
-func (c *PrometheusConverter) handleStartTime(startTs, ts int64, labels []prompb.Label, settings Settings, typ string, value float64, logger gokitlog.Logger) {
-	if !settings.EnableCreatedTimestampZeroIngestion {
-		return
-	}
-	// We want to ignore the write in three cases.
-	// - We've seen samples with the start timestamp set to epoch meaning it wasn't set by the sender so we skip those.
-	// - If StartTimestamp equals Timestamp ist means we don't know at which time the metric restarted according to the spec.
-	// - StartTimestamp can never be greater than the sample timestamp.
-	if startTs <= 0 || startTs == ts || startTs > ts {
-		return
-	}
-
-	// The difference between the start and the actual timestamp is more than a reasonable time, so we skip this sample.
-	if ts-startTs > validIntervalForStartTimestamps {
-		return
-	}
-
-	level.Debug(logger).Log("msg", "adding zero value at start_ts", "type", typ, "labels", labelsStringer(labels), "start_ts", startTs, "sample_ts", ts, "sample_value", value)
-
-	// See https://github.com/prometheus/prometheus/issues/14600 for context.
-	c.addSample(&prompb.Sample{Timestamp: startTs}, labels)
-}
-
-// handleHistogramStartTime similar to the method above but for native histograms..
-func (c *PrometheusConverter) handleHistogramStartTime(startTs, sampleTs int64, ts *prompb.TimeSeries, settings Settings) {
-	if !settings.EnableCreatedTimestampZeroIngestion {
-		return
-	}
-	// We want to ignore the write in three cases.
-	// - We've seen samples with the start timestamp set to epoch meaning it wasn't set by the sender so we skip those.
-	// - If StartTimestamp equals Timestamp ist means we don't know at which time the metric restarted according to the spec.
-	// - StartTimestamp can never be greater than the sample timestamp.
-	if startTs <= 0 || startTs == sampleTs || startTs > sampleTs {
-		return
-	}
-
-	// The difference between the start and the actual timestamp is more than a reasonable time, so we skip this sample.
-	if sampleTs-startTs > validIntervalForStartTimestamps {
-		return
-	}
-
-	ts.Histograms = append(ts.Histograms, prompb.Histogram{Timestamp: startTs})
 }
 
 // addResourceTargetInfo converts the resource to the target info metric.
@@ -656,8 +546,7 @@ func addResourceTargetInfo(resource pcommon.Resource, settings Settings, timesta
 		name = settings.Namespace + "_" + name
 	}
 
-	settings.PromoteResourceAttributes = nil
-	labels := createAttributes(resource, attributes, settings, identifyingAttrs, false, model.MetricNameLabel, name)
+	labels := createAttributes(resource, attributes, settings.ExternalLabels, identifyingAttrs, false, model.MetricNameLabel, name)
 	haveIdentifier := false
 	for _, l := range labels {
 		if l.Name == model.JobLabel || l.Name == model.InstanceLabel {
@@ -671,15 +560,15 @@ func addResourceTargetInfo(resource pcommon.Resource, settings Settings, timesta
 		return
 	}
 
-	ts := convertTimeStamp(timestamp)
 	sample := &prompb.Sample{
-		Value:     float64(1),
-		Timestamp: ts,
+		Value: float64(1),
+		// convert ns to ms
+		Timestamp: convertTimeStamp(timestamp),
 	}
 	converter.addSample(sample, labels)
 }
 
 // convertTimeStamp converts OTLP timestamp in ns to timestamp in ms
 func convertTimeStamp(timestamp pcommon.Timestamp) int64 {
-	return int64(timestamp) / 1_000_000
+	return timestamp.AsTime().UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
 }

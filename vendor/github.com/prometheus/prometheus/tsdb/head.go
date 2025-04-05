@@ -28,8 +28,9 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/oklog/ulid"
-	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/atomic"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/model/exemplar"
@@ -101,7 +102,6 @@ type Head struct {
 
 	// TODO(codesome): Extend MemPostings to return only OOOPostings, Set OOOStatus, ... Like an additional map of ooo postings.
 	postings *index.MemPostings // Postings lists for terms.
-	pfmc     *PostingsForMatchersCache
 
 	tombstones *tombstones.MemTombstones
 
@@ -128,9 +128,6 @@ type Head struct {
 	writeNotified wlog.WriteNotified
 
 	memTruncationInProcess atomic.Bool
-	memTruncationCallBack  func() // For testing purposes.
-
-	secondaryHashFunc func(labels.Labels) uint32
 }
 
 type ExemplarStorage interface {
@@ -161,7 +158,6 @@ type HeadOptions struct {
 	ChunkDirRoot         string
 	ChunkPool            chunkenc.Pool
 	ChunkWriteBufferSize int
-	ChunkEndTimeVariance float64
 	ChunkWriteQueueSize  int
 
 	SamplesPerChunk int
@@ -183,19 +179,6 @@ type HeadOptions struct {
 
 	// EnableSharding enables ShardedPostings() support in the Head.
 	EnableSharding bool
-
-	// Timely compaction allows head compaction to happen when min block range can no longer be appended,
-	// without requiring 1.5x the chunk range worth of data in the head.
-	TimelyCompaction bool
-
-	PostingsForMatchersCacheTTL      time.Duration
-	PostingsForMatchersCacheMaxItems int
-	PostingsForMatchersCacheMaxBytes int64
-	PostingsForMatchersCacheForce    bool
-
-	// Optional hash function applied to each new series. Computed hash value is preserved for each series in the head,
-	// and values can be iterated by using Head.ForEachSecondaryHash method.
-	SecondaryHashFunction func(labels.Labels) uint32
 }
 
 const (
@@ -207,21 +190,16 @@ const (
 
 func DefaultHeadOptions() *HeadOptions {
 	ho := &HeadOptions{
-		ChunkRange:                       DefaultBlockDuration,
-		ChunkDirRoot:                     "",
-		ChunkPool:                        chunkenc.NewPool(),
-		ChunkWriteBufferSize:             chunks.DefaultWriteBufferSize,
-		ChunkEndTimeVariance:             0,
-		ChunkWriteQueueSize:              chunks.DefaultWriteQueueSize,
-		SamplesPerChunk:                  DefaultSamplesPerChunk,
-		StripeSize:                       DefaultStripeSize,
-		SeriesCallback:                   &noopSeriesLifecycleCallback{},
-		IsolationDisabled:                defaultIsolationDisabled,
-		PostingsForMatchersCacheTTL:      DefaultPostingsForMatchersCacheTTL,
-		PostingsForMatchersCacheMaxItems: DefaultPostingsForMatchersCacheMaxItems,
-		PostingsForMatchersCacheMaxBytes: DefaultPostingsForMatchersCacheMaxBytes,
-		PostingsForMatchersCacheForce:    DefaultPostingsForMatchersCacheForce,
-		WALReplayConcurrency:             defaultWALReplayConcurrency,
+		ChunkRange:           DefaultBlockDuration,
+		ChunkDirRoot:         "",
+		ChunkPool:            chunkenc.NewPool(),
+		ChunkWriteBufferSize: chunks.DefaultWriteBufferSize,
+		ChunkWriteQueueSize:  chunks.DefaultWriteQueueSize,
+		SamplesPerChunk:      DefaultSamplesPerChunk,
+		StripeSize:           DefaultStripeSize,
+		SeriesCallback:       &noopSeriesLifecycleCallback{},
+		IsolationDisabled:    defaultIsolationDisabled,
+		WALReplayConcurrency: defaultWALReplayConcurrency,
 	}
 	ho.OutOfOrderCapMax.Store(DefaultOutOfOrderCapMax)
 	return ho
@@ -275,13 +253,6 @@ func NewHead(r prometheus.Registerer, l log.Logger, wal, wbl *wlog.WL, opts *Hea
 		opts.MaxExemplars.Store(0)
 	}
 
-	shf := opts.SecondaryHashFunction
-	if shf == nil {
-		shf = func(labels.Labels) uint32 {
-			return 0
-		}
-	}
-
 	h := &Head{
 		wal:    wal,
 		wbl:    wbl,
@@ -292,10 +263,8 @@ func NewHead(r prometheus.Registerer, l log.Logger, wal, wbl *wlog.WL, opts *Hea
 				return &memChunk{}
 			},
 		},
-		stats:             stats,
-		reg:               r,
-		secondaryHashFunc: shf,
-		pfmc:              NewPostingsForMatchersCache(opts.PostingsForMatchersCacheTTL, opts.PostingsForMatchersCacheMaxItems, opts.PostingsForMatchersCacheMaxBytes, opts.PostingsForMatchersCacheForce),
+		stats: stats,
+		reg:   r,
 	}
 	if err := h.resetInMemoryState(); err != nil {
 		return nil, err
@@ -559,7 +528,6 @@ func newHeadMetrics(h *Head, r prometheus.Registerer) *headMetrics {
 			m.mmapChunksTotal,
 			m.mmapChunkCorruptionTotal,
 			m.snapshotReplayErrorTotal,
-			m.oooHistogram,
 			// Metrics bound to functions and not needed in tests
 			// can be created and registered on the spot.
 			prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -1161,10 +1129,6 @@ func (h *Head) truncateMemory(mint int64) (err error) {
 	h.memTruncationInProcess.Store(true)
 	defer h.memTruncationInProcess.Store(false)
 
-	if h.memTruncationCallBack != nil {
-		h.memTruncationCallBack()
-	}
-
 	// We wait for pending queries to end that overlap with this truncation.
 	if initialized {
 		h.WaitForPendingReadersInTimeRange(h.MinTime(), mint)
@@ -1527,7 +1491,7 @@ func (h *Head) Delete(ctx context.Context, mint, maxt int64, ms ...*labels.Match
 
 	ir := h.indexRange(mint, maxt)
 
-	p, err := ir.PostingsForMatchers(ctx, false, ms...)
+	p, err := PostingsForMatchers(ctx, ir, ms...)
 	if err != nil {
 		return fmt.Errorf("select series: %w", err)
 	}
@@ -1588,7 +1552,7 @@ func (h *Head) gc() (actualInOrderMint, minOOOTime int64, minMmapFile int) {
 
 	// Drop old chunks and remember series IDs and hashes if they can be
 	// deleted entirely.
-	deleted, affected, chunksRemoved, actualInOrderMint, minOOOTime, minMmapFile := h.series.gc(mint, minOOOMmapRef)
+	deleted, chunksRemoved, actualInOrderMint, minOOOTime, minMmapFile := h.series.gc(mint, minOOOMmapRef)
 	seriesRemoved := len(deleted)
 
 	h.metrics.seriesRemoved.Add(float64(seriesRemoved))
@@ -1597,7 +1561,7 @@ func (h *Head) gc() (actualInOrderMint, minOOOTime int64, minMmapFile int) {
 	h.numSeries.Sub(uint64(seriesRemoved))
 
 	// Remove deleted series IDs from the postings lists.
-	h.postings.Delete(deleted, affected)
+	h.postings.Delete(deleted)
 
 	// Remove tombstones referring to the deleted series.
 	h.tombstones.DeleteTombstones(deleted)
@@ -1674,17 +1638,11 @@ func (h *Head) initialized() bool {
 }
 
 // compactable returns whether the head has a compactable range.
-// When the TimelyCompaction option is enabled, the head is compactable when the min block end is .5 times the chunk range in the past.
-// Else the head has a compactable range when the head time range is 1.5 times the chunk range.
+// The head has a compactable range when the head time range is 1.5 times the chunk range.
 // The 0.5 acts as a buffer of the appendable window.
 func (h *Head) compactable() bool {
 	if !h.initialized() {
 		return false
-	}
-
-	if h.opts.TimelyCompaction {
-		minBlockEnd := rangeForTimestamp(h.MinTime(), h.chunkRange.Load())
-		return minBlockEnd < h.appendableMinValidTime()
 	}
 
 	return h.MaxTime()-h.MinTime() > h.chunkRange.Load()/2*3
@@ -1743,7 +1701,7 @@ func (h *Head) getOrCreateWithID(id chunks.HeadSeriesRef, hash uint64, lset labe
 			shardHash = labels.StableHash(lset)
 		}
 
-		return newMemSeries(lset, id, shardHash, h.secondaryHashFunc(lset), h.opts.ChunkEndTimeVariance, h.opts.IsolationDisabled)
+		return newMemSeries(lset, id, shardHash, h.opts.IsolationDisabled)
 	})
 	if err != nil {
 		return nil, false, err
@@ -1801,12 +1759,12 @@ type seriesHashmap struct {
 
 func (m *seriesHashmap) get(hash uint64, lset labels.Labels) *memSeries {
 	if s, found := m.unique[hash]; found {
-		if labels.Equal(s.labels(), lset) {
+		if labels.Equal(s.lset, lset) {
 			return s
 		}
 	}
 	for _, s := range m.conflicts[hash] {
-		if labels.Equal(s.labels(), lset) {
+		if labels.Equal(s.lset, lset) {
 			return s
 		}
 	}
@@ -1814,7 +1772,7 @@ func (m *seriesHashmap) get(hash uint64, lset labels.Labels) *memSeries {
 }
 
 func (m *seriesHashmap) set(hash uint64, s *memSeries) {
-	if existing, found := m.unique[hash]; !found || labels.Equal(existing.labels(), s.labels()) {
+	if existing, found := m.unique[hash]; !found || labels.Equal(existing.lset, s.lset) {
 		m.unique[hash] = s
 		return
 	}
@@ -1823,7 +1781,7 @@ func (m *seriesHashmap) set(hash uint64, s *memSeries) {
 	}
 	l := m.conflicts[hash]
 	for i, prev := range l {
-		if labels.Equal(prev.labels(), s.labels()) {
+		if labels.Equal(prev.lset, s.lset) {
 			l[i] = s
 			return
 		}
@@ -1911,10 +1869,9 @@ func newStripeSeries(stripeSize int, seriesCallback SeriesLifecycleCallback) *st
 // but the returned map goes into postings.Delete() which expects a map[storage.SeriesRef]struct
 // and there's no easy way to cast maps.
 // minMmapFile is the min mmap file number seen in the series (in-order and out-of-order) after gc'ing the series.
-func (s *stripeSeries) gc(mint int64, minOOOMmapRef chunks.ChunkDiskMapperRef) (_ map[storage.SeriesRef]struct{}, _ map[labels.Label]struct{}, _ int, _, _ int64, minMmapFile int) {
+func (s *stripeSeries) gc(mint int64, minOOOMmapRef chunks.ChunkDiskMapperRef) (_ map[storage.SeriesRef]struct{}, _ int, _, _ int64, minMmapFile int) {
 	var (
 		deleted          = map[storage.SeriesRef]struct{}{}
-		affected         = map[labels.Label]struct{}{}
 		rmChunks         = 0
 		actualMint int64 = math.MaxInt64
 		minOOOTime int64 = math.MaxInt64
@@ -1970,10 +1927,9 @@ func (s *stripeSeries) gc(mint int64, minOOOMmapRef chunks.ChunkDiskMapperRef) (
 		}
 
 		deleted[storage.SeriesRef(series.ref)] = struct{}{}
-		series.lset.Range(func(l labels.Label) { affected[l] = struct{}{} })
 		s.hashes[hashShard].del(hash, series.ref)
 		delete(s.series[refShard], series.ref)
-		deletedForCallback[series.ref] = series.lset // OK to access lset; series is locked at the top of this function.
+		deletedForCallback[series.ref] = series.lset
 	}
 
 	s.iterForDeletion(check)
@@ -1982,7 +1938,7 @@ func (s *stripeSeries) gc(mint int64, minOOOMmapRef chunks.ChunkDiskMapperRef) (
 		actualMint = mint
 	}
 
-	return deleted, affected, rmChunks, actualMint, minOOOTime, minMmapFile
+	return deleted, rmChunks, actualMint, minOOOTime, minMmapFile
 }
 
 // The iterForDeletion function iterates through all series, invoking the checkDeletedFunc for each.
@@ -2065,7 +2021,7 @@ func (s *stripeSeries) getOrSet(hash uint64, lset labels.Labels, createSeries fu
 	}
 	// Setting the series in the s.hashes marks the creation of series
 	// as any further calls to this methods would return that series.
-	s.seriesLifecycleCallback.PostCreation(series.labels())
+	s.seriesLifecycleCallback.PostCreation(series.lset)
 
 	i = uint64(series.ref) & uint64(s.size-1)
 
@@ -2106,21 +2062,15 @@ func (s sample) Type() chunkenc.ValueType {
 // memSeries is the in-memory representation of a series. None of its methods
 // are goroutine safe and it is the caller's responsibility to lock it.
 type memSeries struct {
-	// Members up to the Mutex are not changed after construction, so can be accessed without a lock.
+	sync.Mutex
+
 	ref  chunks.HeadSeriesRef
+	lset labels.Labels
 	meta *metadata.Metadata
 
 	// Series labels hash to use for sharding purposes. The value is always 0 when sharding has not
 	// been explicitly enabled in TSDB.
 	shardHash uint64
-
-	// Value returned by secondary hash function.
-	secondaryHash uint32
-
-	// Everything after here should only be accessed with the lock held.
-	sync.Mutex
-
-	lset labels.Labels // Locking required with -tags dedupelabels, not otherwise.
 
 	// Immutable chunks on disk that have not yet gone into a block, in order of ascending time stamps.
 	// When compaction runs, chunks get moved into a block and all pointers are shifted like so:
@@ -2142,13 +2092,8 @@ type memSeries struct {
 
 	mmMaxTime int64 // Max time of any mmapped chunk, only used during WAL replay.
 
-	// chunkEndTimeVariance is how much variance (between 0 and 1) should be applied to the chunk end time,
-	// to spread chunks writing across time. Doesn't apply to the last chunk of the chunk range. 0 to disable variance.
-	chunkEndTimeVariance float64
-
 	nextAt                           int64 // Timestamp at which to cut the next chunk.
 	histogramChunkHasComputedEndTime bool  // True if nextAt has been predicted for the current histograms chunk; false otherwise.
-	pendingCommit                    bool  // Whether there are samples waiting to be committed to this series.
 
 	// We keep the last value here (in addition to appending it to the chunk) so we can check for duplicates.
 	lastValue float64
@@ -2164,6 +2109,8 @@ type memSeries struct {
 
 	// txs is nil if isolation is disabled.
 	txs *txRing
+
+	pendingCommit bool // Whether there are samples waiting to be committed to this series.
 }
 
 // memSeriesOOOFields contains the fields required by memSeries
@@ -2174,14 +2121,12 @@ type memSeriesOOOFields struct {
 	firstOOOChunkID  chunks.HeadChunkID // HeadOOOChunkID for oooMmappedChunks[0].
 }
 
-func newMemSeries(lset labels.Labels, id chunks.HeadSeriesRef, shardHash uint64, secondaryHash uint32, chunkEndTimeVariance float64, isolationDisabled bool) *memSeries {
+func newMemSeries(lset labels.Labels, id chunks.HeadSeriesRef, shardHash uint64, isolationDisabled bool) *memSeries {
 	s := &memSeries{
-		lset:                 lset,
-		ref:                  id,
-		nextAt:               math.MinInt64,
-		chunkEndTimeVariance: chunkEndTimeVariance,
-		shardHash:            shardHash,
-		secondaryHash:        secondaryHash,
+		lset:      lset,
+		ref:       id,
+		nextAt:    math.MinInt64,
+		shardHash: shardHash,
 	}
 	if !isolationDisabled {
 		s.txs = newTxRing(0)
@@ -2392,65 +2337,4 @@ func (h *Head) updateWALReplayStatusRead(current int) {
 	defer h.stats.WALReplayStatus.Unlock()
 
 	h.stats.WALReplayStatus.Current = current
-}
-
-// ForEachSecondaryHash iterates over all series in the Head, and passes references and secondary hashes of the series
-// to the function. Function is called with batch of refs and hashes, in no specific order. The order of the refs
-// in the same as the order of the hashes. Each series in the head is included exactly once.
-// Series may be deleted while the function is running, and series inserted while this function runs may be reported or ignored.
-//
-// No locks are held when function is called.
-//
-// Slices passed to the function are reused between calls.
-func (h *Head) ForEachSecondaryHash(fn func(ref []chunks.HeadSeriesRef, secondaryHash []uint32)) {
-	slices := newPairOfSlices[chunks.HeadSeriesRef, uint32](512)
-
-	for i := 0; i < h.series.size; i++ {
-		slices = slices.reset()
-
-		h.series.locks[i].RLock()
-		for _, s := range h.series.hashes[i].unique {
-			// No need to lock series lock, as we're only accessing its immutable secondary hash.
-			slices = slices.append(s.ref, s.secondaryHash)
-		}
-		for _, all := range h.series.hashes[i].conflicts {
-			for _, s := range all {
-				// No need to lock series lock, as we're only accessing its immutable secondary hash.
-				slices = slices.append(s.ref, s.secondaryHash)
-			}
-		}
-		h.series.locks[i].RUnlock()
-
-		if slices.len() > 0 {
-			fn(slices.slice1, slices.slice2)
-		}
-	}
-}
-
-type pairOfSlices[T1, T2 any] struct {
-	slice1 []T1
-	slice2 []T2
-}
-
-func newPairOfSlices[T1, T2 any](length int) pairOfSlices[T1, T2] {
-	return pairOfSlices[T1, T2]{
-		slice1: make([]T1, length),
-		slice2: make([]T2, length),
-	}
-}
-
-func (p pairOfSlices[T1, T2]) reset() pairOfSlices[T1, T2] {
-	p.slice1 = p.slice1[:0]
-	p.slice2 = p.slice2[:0]
-	return p
-}
-
-func (p pairOfSlices[T1, T2]) append(t1 T1, t2 T2) pairOfSlices[T1, T2] {
-	p.slice1 = append(p.slice1, t1)
-	p.slice2 = append(p.slice2, t2)
-	return p
-}
-
-func (p pairOfSlices[T1, T2]) len() int {
-	return len(p.slice1)
 }

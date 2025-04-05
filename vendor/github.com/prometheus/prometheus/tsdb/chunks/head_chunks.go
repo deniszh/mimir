@@ -191,7 +191,7 @@ func (f *chunkPos) bytesToWriteForChunk(chkLen uint64) uint64 {
 // ChunkDiskMapper is for writing the Head block chunks to disk
 // and access chunks via mmapped files.
 type ChunkDiskMapper struct {
-	// Writer.
+	/// Writer.
 	dir             *os.File
 	writeBufferSize int
 
@@ -210,7 +210,7 @@ type ChunkDiskMapper struct {
 	crc32        hash.Hash
 	writePathMtx sync.Mutex
 
-	// Reader.
+	/// Reader.
 	// The int key in the map is the file number on the disk.
 	mmappedChunkFiles map[int]*mmappedChunkFile // Contains the m-mapped files for each chunk file mapped with its index.
 	closers           map[int]io.Closer         // Closers for resources behind the byte slices.
@@ -565,12 +565,11 @@ func (cdm *ChunkDiskMapper) writeChunk(seriesRef HeadSeriesRef, mint, maxt int64
 }
 
 // CutNewFile makes that a new file will be created the next time a chunk is written.
-func (cdm *ChunkDiskMapper) CutNewFile() error {
+func (cdm *ChunkDiskMapper) CutNewFile() {
 	cdm.evtlPosMtx.Lock()
 	defer cdm.evtlPosMtx.Unlock()
 
 	cdm.evtlPos.cutFileOnNextChunk()
-	return nil
 }
 
 func (cdm *ChunkDiskMapper) IsQueueEmpty() bool {
@@ -959,7 +958,7 @@ func (cdm *ChunkDiskMapper) Truncate(fileNo uint32) error {
 		// There is a known race condition here because between the check of curFileSize() and the call to CutNewFile()
 		// a new file could already be cut, this is acceptable because it will simply result in an empty file which
 		// won't do any harm.
-		errs.Add(cdm.CutNewFile())
+		cdm.CutNewFile()
 	}
 	pendingDeletes, err := cdm.deleteFiles(removedFiles)
 	errs.Add(err)

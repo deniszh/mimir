@@ -60,6 +60,9 @@ type Parser interface {
 	// It returns the string from which the metric was parsed.
 	Metric(l *labels.Labels) string
 
+	// MetricToBuilder writes the labels of the current sample into the passed builder.
+	MetricToBuilder(builder Builder) // PP_CHANGES.md: rebuild on cpp
+
 	// Exemplar writes the exemplar of the current sample into the passed
 	// exemplar. It can be called repeatedly to retrieve multiple exemplars
 	// for the same sample. It returns false once all exemplars are
@@ -106,8 +109,8 @@ const (
 	EntryInvalid   Entry = -1
 	EntryType      Entry = 0
 	EntryHelp      Entry = 1
-	EntrySeries    Entry = 2 // EntrySeries marks a series with a simple float64 as value.
+	EntrySeries    Entry = 2 // A series with a simple float64 as value.
 	EntryComment   Entry = 3
 	EntryUnit      Entry = 4
-	EntryHistogram Entry = 5 // EntryHistogram marks a series with a native histogram as a value.
+	EntryHistogram Entry = 5 // A series with a native histogram as a value.
 )
