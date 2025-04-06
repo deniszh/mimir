@@ -96,6 +96,9 @@
 * [BUGFIX] Ingester: fix goroutines and memory leak when experimental ingest storage enabled and a server-side error occurs during metrics ingestion. #10915
 * [BUGFIX] Alertmanager: Avoid fetching Grafana state if Grafana AM compatibility is not enabled. #10857
 
+* [FEATURE] gRPC: Support ZSTD compression for ingester client. #10411
+  * `-ingester.client.grpc-compression=zstd`
+
 ### Mixin
 
 * [CHANGE] Alerts: Only alert on errors performing cache operations if there are over 10 request/sec to avoid flapping. #10832
