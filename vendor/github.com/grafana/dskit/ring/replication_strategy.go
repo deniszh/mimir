@@ -18,7 +18,13 @@ type ReplicationStrategy interface {
 	SupportsExpandedReplication() bool
 }
 
-type defaultReplicationStrategy struct{}
+type ReplicationStrategyWithConsistency interface {
+	WithConsistency(consistencyLevel ConsistencyLevel) (ReplicationStrategy, error)
+}
+
+type defaultReplicationStrategy struct {
+	consistencyLevel ConsistencyLevel
+}
 
 func NewDefaultReplicationStrategy() ReplicationStrategy {
 	return &defaultReplicationStrategy{}
@@ -39,6 +45,9 @@ func (s *defaultReplicationStrategy) Filter(instances []InstanceDesc, op Operati
 	}
 
 	minSuccess := (replicationFactor / 2) + 1
+	if s.consistencyLevel == ConsistencyAny {
+		minSuccess = 1
+	}
 	now := time.Now()
 
 	// Skip those that have not heartbeated in a while. NB these are still
@@ -52,6 +61,10 @@ func (s *defaultReplicationStrategy) Filter(instances []InstanceDesc, op Operati
 			unhealthy = append(unhealthy, instances[i].Addr)
 			instances = append(instances[:i], instances[i+1:]...)
 		}
+	}
+
+	if len(instances) < minSuccess && len(instances) > 0 && s.consistencyLevel == ConsistencyRelaxedQuorum {
+		minSuccess = len(instances)
 	}
 
 	// This is just a shortcut - if there are not minSuccess available instances,
@@ -81,6 +94,10 @@ func (s *defaultReplicationStrategy) SupportsExpandedReplication() bool {
 	// when a per-call replication factor increases it beyond the configured replication factor
 	// and the number of zones.
 	return false
+}
+
+func (s *defaultReplicationStrategy) WithConsistency(consistencyLevel ConsistencyLevel) (ReplicationStrategy, error) {
+	return &defaultReplicationStrategy{consistencyLevel: consistencyLevel}, nil
 }
 
 type ignoreUnhealthyInstancesReplicationStrategy struct{}
@@ -118,6 +135,10 @@ func (r *ignoreUnhealthyInstancesReplicationStrategy) SupportsExpandedReplicatio
 	return true
 }
 
+func (r *ignoreUnhealthyInstancesReplicationStrategy) WithConsistency(consistencyLevel ConsistencyLevel) (ReplicationStrategy, error) {
+	return r, nil
+}
+
 func (r *Ring) IsHealthy(instance *InstanceDesc, op Operation, now time.Time) bool {
 	return instance.IsHealthy(op, r.cfg.HeartbeatTimeout, now)
 }
@@ -125,4 +146,17 @@ func (r *Ring) IsHealthy(instance *InstanceDesc, op Operation, now time.Time) bo
 // ReplicationFactor of the ring.
 func (r *Ring) ReplicationFactor() int {
 	return r.cfg.ReplicationFactor
+}
+
+func withConsistency(strategy ReplicationStrategy, consistencyLevel ConsistencyLevel) (ReplicationStrategy, error) {
+	if consistencyLevel == 0 {
+		return strategy, nil
+	}
+
+	withConsistency, hasConsistency := strategy.(ReplicationStrategyWithConsistency)
+	if !hasConsistency {
+		return nil, fmt.Errorf("Replication strategy does not support required consistency level: %d", consistencyLevel)
+	}
+
+	return withConsistency.WithConsistency(consistencyLevel)
 }

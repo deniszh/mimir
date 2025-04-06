@@ -951,6 +951,8 @@ github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSs
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/deniszh/dskit v0.0.0-20250406110254-9a4314e759b3 h1:rDo3+9JGybNX/oi9NlJbz+EwuyFPRkKAVcftT6EJTbo=
+github.com/deniszh/dskit v0.0.0-20250406110254-9a4314e759b3/go.mod h1:XG+m+dyFETjmwcds1Sde6L0KQvtUUfvjs+n7MdrTrAM=
 github.com/dennwc/varint v1.0.0 h1:kGNFFSSw8ToIy3obO/kKr8U9GZYUAxQEVuix4zfDWzE=
 github.com/dennwc/varint v1.0.0/go.mod h1:hnItb35rvZvJrbTALZtY/iQfDs48JKRG1RPpgziApxA=
 github.com/dgraph-io/ristretto v0.1.1 h1:6CWw5tJNgpegArSHpNHJKldNeq03FQCwYvfMVWajOK8=
@@ -1274,8 +1276,6 @@ github.com/grafana-tools/sdk v0.0.0-20220919052116-6562121319fc h1:PXZQA2WCxe85T
 github.com/grafana-tools/sdk v0.0.0-20220919052116-6562121319fc/go.mod h1:AHHlOEv1+GGQ3ktHMlhuTUwo3zljV3QJbC0+8o2kn+4=
 github.com/grafana/alerting v0.0.0-20250310104713-16b885f1c79e h1:noJzp/qZGIto4XdZkvj2EKQ1bQeqCRs0bedxdJN17sQ=
 github.com/grafana/alerting v0.0.0-20250310104713-16b885f1c79e/go.mod h1:HfvjmU3UqCIpoy9Z2wgKGrZ4A5vz+yQlP9ZXvCfEkiA=
-github.com/grafana/dskit v0.0.0-20250314184143-8abd91ce153f h1:EpKxS54XgalLZgxE6t6N4qcvtPMtJfBtrxqq2f8dCsE=
-github.com/grafana/dskit v0.0.0-20250314184143-8abd91ce153f/go.mod h1:XG+m+dyFETjmwcds1Sde6L0KQvtUUfvjs+n7MdrTrAM=
 github.com/grafana/e2e v0.1.2-0.20250306030804-b80b212be908 h1:l3pFNUs4heAhiXnMo0thaJQrNWeE4SgLqUOEUmZtC6A=
 github.com/grafana/e2e v0.1.2-0.20250306030804-b80b212be908/go.mod h1:JVmqPBe8A/pZWwRoJW5ZjyALeY5OXMzPl7LrVXOdZAI=
 github.com/grafana/franz-go v0.0.0-20241009100846-782ba1442937 h1:fwwnG/NcygoS6XbAaEyK2QzMXI/BZIEJvQ3CD+7XZm8=
