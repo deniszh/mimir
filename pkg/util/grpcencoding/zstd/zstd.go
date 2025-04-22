@@ -62,6 +62,11 @@ func newCompressor() *compressor {
 	c := &compressor{
 		name: Name,
 	}
+	if DictionaryData != nil && len(DictionaryData) > 0 {
+		c.dict = DictionaryData
+		encoderOptions = append(encoderOptions, zstd.WithEncoderDict(c.dict))
+		decoderOptions = append(decoderOptions, zstd.WithDecoderDicts(c.dict))
+	}
 	c.poolCompressor.New = func() interface{} {
 		w, err := zstd.NewWriter(io.Discard, encoderOptions...)
 		if err != nil {
