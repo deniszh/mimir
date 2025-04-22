@@ -44,7 +44,7 @@ func init() {
 func newCompressor() *compressor {
 	opts := []minlz.WriterOption{
 		minlz.WriterLevel(minlz.LevelBalanced),
-		minlz.WriterBlockSize(1 << 21),
+		minlz.WriterBlockSize(2 << 20),
 	}
 	c := &compressor{
 		name: Name,
