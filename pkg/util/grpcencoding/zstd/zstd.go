@@ -22,15 +22,19 @@ const (
 var encoderOptions = []zstd.EOption{
 	// The default zstd window size is 8MB, which is much larger than the
 	// typical RPC message and wastes a bunch of memory.
-	zstd.WithWindowSize(512 * 1024),
+	zstd.WithWindowSize(2 * 1024 * 1024),
 	// The default zstd compression level is 2
 	zstd.WithEncoderLevel(zstd.SpeedDefault),
+	// let's try low memory mode
+	zstd.WithLowerEncoderMem(true),
 }
 var decoderOptions = []zstd.DOption{
 	// If the decoder concurrency level is not 1, we would need to call
 	// Close() to avoid leaking resources when the object is released
 	// from compressor.decoderPool.
 	zstd.WithDecoderConcurrency(1),
+	// let's try low memory mode
+	zstd.WithDecoderLowmem(true),
 }
 
 type compressor struct {
