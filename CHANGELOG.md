@@ -156,6 +156,9 @@
 * [BUGFIX] Ingester: Fix issue where ingesters can exit read-only mode during idle compactions, resulting in write errors. #12128
 * [BUGFIX] otlp: Reverts #11889 which has a pooled memory re-use bug. #12266
 
+* [FEATURE] gRPC: Support ZSTD compression for ingester client. #10411
+  * `-ingester.client.grpc-compression=zstd`
+
 ### Mixin
 
 * [CHANGE] Alerts: Update the query for `MimirBucketIndexNotUpdated` to use `max_over_time` to prevent alert firing when pods rotate. #11311, #11426
