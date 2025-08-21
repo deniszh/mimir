@@ -293,6 +293,7 @@ type Limits struct {
 	PromoteOTelResourceAttributes            flagext.StringSliceCSV `yaml:"promote_otel_resource_attributes" json:"promote_otel_resource_attributes" category:"experimental"`
 	OTelKeepIdentifyingResourceAttributes    bool                   `yaml:"otel_keep_identifying_resource_attributes" json:"otel_keep_identifying_resource_attributes" category:"experimental"`
 	OTelConvertHistogramsToNHCB              bool                   `yaml:"otel_convert_histograms_to_nhcb" json:"otel_convert_histograms_to_nhcb" category:"experimental"`
+	OTelConvertHistogramsToNHCBAndDW         bool                   `yaml:"otel_convert_histograms_to_nhcb_and_dw" json:"otel_convert_histograms_to_nhcb_and_dw" category:"experimental"`
 	OTelPromoteScopeMetadata                 bool                   `yaml:"otel_promote_scope_metadata" json:"otel_promote_scope_metadata" category:"experimental"`
 	OTelNativeDeltaIngestion                 bool                   `yaml:"otel_native_delta_ingestion" json:"otel_native_delta_ingestion" category:"experimental"`
 
@@ -342,6 +343,7 @@ func (l *Limits) RegisterFlags(f *flag.FlagSet) {
 	f.Var(&l.PromoteOTelResourceAttributes, "distributor.otel-promote-resource-attributes", "Optionally specify OTel resource attributes to promote to labels.")
 	f.BoolVar(&l.OTelKeepIdentifyingResourceAttributes, "distributor.otel-keep-identifying-resource-attributes", false, "Whether to keep identifying OTel resource attributes in the target_info metric on top of converting to job and instance labels.")
 	f.BoolVar(&l.OTelConvertHistogramsToNHCB, "distributor.otel-convert-histograms-to-nhcb", false, "Whether to convert OTel explicit histograms into native histograms with custom buckets.")
+	f.BoolVar(&l.OTelConvertHistogramsToNHCBAndDW, "distributor.otel-convert-histograms-to-nhcb-and-dw", false, "Whether to double-write to classic histograms when converting OTel explicit histograms into native histograms with custom buckets.")
 	f.BoolVar(&l.OTelPromoteScopeMetadata, "distributor.otel-promote-scope-metadata", false, "Whether to promote OTel scope metadata (scope name, version, schema URL, attributes) to corresponding metric labels, prefixed with otel_scope_.")
 	f.BoolVar(&l.OTelNativeDeltaIngestion, "distributor.otel-native-delta-ingestion", false, "Whether to enable native ingestion of delta OTLP metrics, which will store the raw delta sample values without conversion. If disabled, delta metrics will be rejected. Delta support is in an early stage of development. The ingestion and querying process is likely to change over time.")
 
@@ -1362,6 +1364,10 @@ func (o *Overrides) OTelKeepIdentifyingResourceAttributes(tenantID string) bool 
 
 func (o *Overrides) OTelConvertHistogramsToNHCB(tenantID string) bool {
 	return o.getOverridesForUser(tenantID).OTelConvertHistogramsToNHCB
+}
+
+func (o *Overrides) OTelConvertHistogramsToNHCBAndDW(tenantID string) bool {
+	return o.getOverridesForUser(tenantID).OTelConvertHistogramsToNHCBAndDW
 }
 
 func (o *Overrides) OTelPromoteScopeMetadata(tenantID string) bool {

@@ -59,6 +59,7 @@ type OTLPHandlerLimits interface {
 	PromoteOTelResourceAttributes(id string) []string
 	OTelKeepIdentifyingResourceAttributes(id string) bool
 	OTelConvertHistogramsToNHCB(id string) bool
+	OTelConvertHistogramsToNHCBAndDW(id string) bool
 	OTelPromoteScopeMetadata(id string) bool
 	OTelNativeDeltaIngestion(id string) bool
 }
@@ -288,6 +289,7 @@ func newOTLPParser(
 		promoteResourceAttributes := resourceAttributePromotionConfig.PromoteOTelResourceAttributes(tenantID)
 		keepIdentifyingResourceAttributes := limits.OTelKeepIdentifyingResourceAttributes(tenantID)
 		convertHistogramsToNHCB := limits.OTelConvertHistogramsToNHCB(tenantID)
+		convertHistogramsToNHCBAndDW := limits.OTelConvertHistogramsToNHCBAndDW(tenantID)
 		promoteScopeMetadata := limits.OTelPromoteScopeMetadata(tenantID)
 		allowDeltaTemporality := limits.OTelNativeDeltaIngestion(tenantID)
 
@@ -304,6 +306,7 @@ func newOTLPParser(
 				enableStartTimeQuietZero:          enableStartTimeQuietZero,
 				keepIdentifyingResourceAttributes: keepIdentifyingResourceAttributes,
 				convertHistogramsToNHCB:           convertHistogramsToNHCB,
+				convertHistogramsToNHCBAndDW:      convertHistogramsToNHCBAndDW,
 				promoteScopeMetadata:              promoteScopeMetadata,
 				promoteResourceAttributes:         promoteResourceAttributes,
 				allowDeltaTemporality:             allowDeltaTemporality,
@@ -515,6 +518,7 @@ type conversionOptions struct {
 	enableStartTimeQuietZero          bool
 	keepIdentifyingResourceAttributes bool
 	convertHistogramsToNHCB           bool
+	convertHistogramsToNHCBAndDW      bool
 	promoteScopeMetadata              bool
 	promoteResourceAttributes         []string
 	allowDeltaTemporality             bool
@@ -538,6 +542,14 @@ func otelMetricsToTimeseries(
 		AllowDeltaTemporality:               opts.allowDeltaTemporality,
 	}
 	mimirTS := converter.ToTimeseries(ctx, md, settings, logger)
+	if opts.convertHistogramsToNHCB && opts.convertHistogramsToNHCBAndDW {
+		mdDW := keepHistogramsOnly(md)
+
+		if mdDW.ResourceMetrics().Len() > 0 {
+			settings.ConvertHistogramsToNHCB = false
+			mimirTS = append(mimirTS, converter.ToTimeseries(ctx, mdDW, settings, logger)...)
+		}
+	}
 
 	dropped := converter.DroppedTotal()
 	if len(mimirTS) == 0 && dropped > 0 {
@@ -688,4 +700,46 @@ func translateBucketsLayout(spans []prompb.BucketSpan, deltas []int64) (int32, [
 	}
 
 	return firstSpan.Offset - 1, buckets
+}
+
+func keepHistogramsOnly(md pmetric.Metrics) pmetric.Metrics {
+	result := pmetric.NewMetrics()
+
+	for i := 0; i < md.ResourceMetrics().Len(); i++ {
+		resourceMetrics := md.ResourceMetrics().At(i)
+
+		var newResourceMetrics pmetric.ResourceMetrics
+
+		for j := 0; j < resourceMetrics.ScopeMetrics().Len(); j++ {
+			scopeMetrics := resourceMetrics.ScopeMetrics().At(j)
+
+			var newScopeMetrics pmetric.ScopeMetrics
+
+			for k := 0; k < scopeMetrics.Metrics().Len(); k++ {
+				metric := scopeMetrics.Metrics().At(k)
+
+				// Only process histogram type metrics
+				if metric.Type() == pmetric.MetricTypeHistogram {
+					// Initialize resource metrics if not done yet
+					if newResourceMetrics == (pmetric.ResourceMetrics{}) {
+						newResourceMetrics = result.ResourceMetrics().AppendEmpty()
+						resourceMetrics.Resource().CopyTo(newResourceMetrics.Resource())
+						newResourceMetrics.SetSchemaUrl(resourceMetrics.SchemaUrl())
+					}
+
+					// Initialize scope metrics if not done yet
+					if newScopeMetrics == (pmetric.ScopeMetrics{}) {
+						newScopeMetrics = newResourceMetrics.ScopeMetrics().AppendEmpty()
+						scopeMetrics.Scope().CopyTo(newScopeMetrics.Scope())
+						newScopeMetrics.SetSchemaUrl(scopeMetrics.SchemaUrl())
+					}
+
+					// Copy the histogram metric
+					metric.CopyTo(newScopeMetrics.Metrics().AppendEmpty())
+				}
+			}
+		}
+	}
+
+	return result
 }
