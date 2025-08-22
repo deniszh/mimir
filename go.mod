@@ -381,5 +381,4 @@ replace github.com/prometheus/otlptranslator => github.com/grafana/mimir-otlptra
 // Replace objstore with a fork containing https://github.com/thanos-io/objstore/pull/181.
 replace github.com/thanos-io/objstore => github.com/charleskorn/objstore v0.0.0-20250527065533-21d4c0c463eb
 
-// Replace dskit with patched version for Mbarbon consistencyLevel patch
-replace github.com/grafana/dskit => github.com/deniszh/dskit v0.0.0-20250821132954-50747735a7b9
+replace github.com/grafana/dskit => github.com/deniszh/dskit v0.0.0-20250822081825-a4b9d1276cb0

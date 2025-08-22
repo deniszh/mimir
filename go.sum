@@ -268,8 +268,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-xdr v0.0.0-20161123171359-e6a2ba005892/go.mod h1:CTDl0pzVzE5DEzZhPfvhY/9sPFMQIxaJ9VAMs9AagrE=
 github.com/dchest/siphash v1.2.3/go.mod h1:0NvQU092bT0ipiFN++/rXm69QG9tVxLAlQHIXMPAkHc=
-github.com/deniszh/dskit v0.0.0-20250821132954-50747735a7b9 h1:COWAAFrvmWO5UM3sb9Kv1q1doMuCqQaZjNTX3pMuL1M=
-github.com/deniszh/dskit v0.0.0-20250821132954-50747735a7b9/go.mod h1:gVg14WngG7SMnJ/5mZGNFAs31+7BhspoWfmZ/U4rb90=
+github.com/deniszh/dskit v0.0.0-20250822081825-a4b9d1276cb0 h1:b+QfpNrC6pxhboli72we+8PeNDUAo6bOi5AgcPUnOv4=
+github.com/deniszh/dskit v0.0.0-20250822081825-a4b9d1276cb0/go.mod h1:gVg14WngG7SMnJ/5mZGNFAs31+7BhspoWfmZ/U4rb90=
 github.com/dennwc/varint v1.0.0 h1:kGNFFSSw8ToIy3obO/kKr8U9GZYUAxQEVuix4zfDWzE=
 github.com/dennwc/varint v1.0.0/go.mod h1:hnItb35rvZvJrbTALZtY/iQfDs48JKRG1RPpgziApxA=
 github.com/dgraph-io/ristretto v0.1.1 h1:6CWw5tJNgpegArSHpNHJKldNeq03FQCwYvfMVWajOK8=

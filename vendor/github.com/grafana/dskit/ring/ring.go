@@ -782,7 +782,9 @@ func (r *Ring) GetSubringForOperationStates(op Operation) ReadRing {
 		}
 	}
 
-	return r.buildRingForTheShard(shard)
+	// stub for now
+	// it's in use only for rulers, we're not using ConsistencyLevel there
+	return r.buildRingForTheShard(shard, ConsistencyQuorum)
 }
 
 // CountTokens returns the number tokens within the range for each instance.
