@@ -155,9 +155,9 @@
 * [BUGFIX] Block-builder-scheduler: Fix bugs in handling of partitions with no commit. #12130
 * [BUGFIX] Ingester: Fix issue where ingesters can exit read-only mode during idle compactions, resulting in write errors. #12128
 * [BUGFIX] otlp: Reverts #11889 which has a pooled memory re-use bug. #12266
-
 * [FEATURE] gRPC: Support ZSTD compression for ingester client. #10411
   * `-ingester.client.grpc-compression=zstd`
+* [BUGFIX] Ingester: Fix a bug ingesters would get stuck in read-only mode after compactions. #12538
 
 ### Mixin
 
