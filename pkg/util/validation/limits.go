@@ -37,7 +37,7 @@ const (
 	MaxSeriesPerMetricFlag                    = "ingester.max-global-series-per-metric"
 	MaxMetadataPerMetricFlag                  = "ingester.max-global-metadata-per-metric"
 	MaxSeriesPerUserFlag                      = "ingester.max-global-series-per-user"
-	MaxActiveSeriesPerUserFlag                = "ingester.max-global-active-series-per-user"
+	MaxActiveSeriesPerUserFlag                = "ingester.max-active-series-per-user"
 	MaxMetadataPerUserFlag                    = "ingester.max-global-metadata-per-user"
 	MaxChunksPerQueryFlag                     = "querier.max-fetched-chunks-per-query"
 	MaxChunkBytesPerQueryFlag                 = "querier.max-fetched-chunk-bytes-per-query"

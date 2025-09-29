@@ -29,6 +29,7 @@ var (
 		ingestionRate,
 		ingestionBurstSize,
 		ingestionArtificialDelay,
+		maxActiveSeriesPerUser,
 		maxGlobalSeriesPerUser,
 		maxGlobalSeriesPerMetric,
 		maxGlobalExemplarsPerUser,
@@ -49,6 +50,7 @@ var (
 	defaultEnabledMetricNames = []string{
 		ingestionRate,
 		ingestionBurstSize,
+		maxActiveSeriesPerUser,
 		maxGlobalSeriesPerUser,
 		maxGlobalSeriesPerMetric,
 		maxGlobalExemplarsPerUser,
@@ -64,6 +66,7 @@ const (
 	ingestionRate                              = "ingestion_rate"
 	ingestionBurstSize                         = "ingestion_burst_size"
 	ingestionArtificialDelay                   = "ingestion_artificial_delay"
+	maxActiveSeriesPerUser                     = "max_active_series_per_user"
 	maxGlobalSeriesPerUser                     = "max_global_series_per_user"
 	maxGlobalSeriesPerMetric                   = "max_global_series_per_metric"
 	maxGlobalExemplarsPerUser                  = "max_global_exemplars_per_user"
@@ -194,6 +197,9 @@ func setupExportedMetrics(enabledMetrics *util.AllowList, extraMetrics []Exporte
 		exportedMetrics = append(exportedMetrics, ExportedMetric{ingestionArtificialDelay, func(limits *validation.Limits) float64 {
 			return time.Duration(limits.IngestionArtificialDelay).Seconds()
 		}})
+	}
+	if enabledMetrics.IsAllowed(maxActiveSeriesPerUser) {
+		exportedMetrics = append(exportedMetrics, ExportedMetric{maxActiveSeriesPerUser, func(limits *validation.Limits) float64 { return float64(limits.MaxActiveSeriesPerUser) }})
 	}
 	if enabledMetrics.IsAllowed(maxGlobalSeriesPerUser) {
 		exportedMetrics = append(exportedMetrics, ExportedMetric{maxGlobalSeriesPerUser, func(limits *validation.Limits) float64 { return float64(limits.MaxGlobalSeriesPerUser) }})
