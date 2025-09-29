@@ -86,9 +86,11 @@ var (
 )
 
 type ownedSeriesState struct {
-	ownedSeriesCount int // Number of "owned" series, based on current ring.
-	shardSize        int // Tenant shard size when "owned" series was last updated due to ring or shard size changes. Used to detect shard size changes.
-	localSeriesLimit int // Local series limit when "owned" series was last updated due to ring or shard size changes. Used as a minimum when calculating series limits.
+	ownedSeriesCount       int // Number of "owned" series, based on current ring.
+	ownedActiveSeriesCount int // Number of "owned" active series, based on current ring.
+	shardSize              int // Tenant shard size when "owned" series was last updated due to ring or shard size changes. Used to detect shard size changes.
+	localSeriesLimit       int // Local series limit when "owned" series was last updated due to ring or shard size changes. Used as a minimum when calculating series limits.
+	localActiveSeriesLimit int // Local active series limit when "owned" active series was last updated due to ring or shard size changes. Used as a minimum when calculating series limits.
 }
 
 type userTSDB struct {
@@ -299,6 +301,12 @@ func (u *userTSDB) PreCreation(metric labels.Labels) error {
 		return globalerror.MaxSeriesPerUser
 	}
 
+	// Active series limit.
+	activeSeries, minLocalLimit := u.getActiveSeriesCountAndMinLocalLimit()
+	if !u.limiter.IsWithinMaxActiveSeriesPerUser(u.userID, activeSeries, minLocalLimit) {
+		return globalerror.MaxActiveSeriesPerUser
+	}
+
 	// Series per metric name limit.
 	metricName, err := extract.MetricNameFromLabels(metric)
 	if err != nil {
@@ -324,6 +332,20 @@ func (u *userTSDB) getSeriesCountAndMinLocalLimit() (int, int) {
 	return count, minLocalLimit
 }
 
+// getActiveSeriesCountAndMinLocalLimit returns current number of series and minimum local limit that should be used for computing
+// active series limit.
+func (u *userTSDB) getActiveSeriesCountAndMinLocalLimit() (int, int) {
+	if u.useOwnedSeriesForLimits {
+		os := u.ownedSeriesState()
+		return os.ownedActiveSeriesCount, os.localActiveSeriesLimit
+	}
+
+	count, _, _ := u.activeSeries.Active()
+	minLocalLimit := 0
+	return count, minLocalLimit
+}
+
+// PostCreation implements tsdb.SeriesLifecycleCallback.
 func (u *userTSDB) PostCreation(metric labels.Labels) {
 	u.instanceSeriesCount.Inc()
 
@@ -331,6 +353,7 @@ func (u *userTSDB) PostCreation(metric labels.Labels) {
 	// but we will recompute owned series when ingester joins the ring.)
 	u.ownedStateMtx.Lock()
 	u.ownedState.ownedSeriesCount++
+	u.ownedState.ownedActiveSeriesCount++
 	u.ownedStateMtx.Unlock()
 
 	metricName, err := extract.MetricNameFromLabels(metric)
@@ -546,7 +569,7 @@ const (
 func (u *userTSDB) recomputeOwnedSeriesWithComputeFn(shardSize int, reason string, logger log.Logger, compute func() int) (success bool, _ int) {
 	start := time.Now()
 
-	var ownedSeriesNew, ownedSeriesBefore, shardSizeBefore, localLimitBefore, localLimitNew int
+	var ownedSeriesNew, ownedSeriesBefore, ownedActiveSeriesNew, ownedActiveSeriesBefore, shardSizeBefore, localLimitBefore, localLimitNew, localActiveLimitBefore, localActiveLimitNew int
 
 	success = false
 	attempts := 0
@@ -555,11 +578,15 @@ func (u *userTSDB) recomputeOwnedSeriesWithComputeFn(shardSize int, reason strin
 
 		os := u.ownedSeriesState()
 		ownedSeriesBefore = os.ownedSeriesCount
+		ownedActiveSeriesBefore = os.ownedActiveSeriesCount
 		shardSizeBefore = os.shardSize
 		localLimitBefore = os.localSeriesLimit
+		localActiveLimitBefore = os.localActiveSeriesLimit
 
 		localLimitNew = u.limiter.maxSeriesPerUser(u.userID, 0)
+		localActiveLimitNew = u.limiter.maxActiveSeriesPerUser(u.userID, 0)
 		ownedSeriesNew = compute()
+		ownedActiveSeriesNew, _, _ = u.activeSeries.Active()
 
 		u.ownedStateMtx.Lock()
 
@@ -574,8 +601,10 @@ func (u *userTSDB) recomputeOwnedSeriesWithComputeFn(shardSize int, reason strin
 
 		// Even if we run computation again, we can start using our (possibly incorrect) values already.
 		u.ownedState.ownedSeriesCount = ownedSeriesNew
+		u.ownedState.ownedActiveSeriesCount = ownedActiveSeriesNew
 		u.ownedState.shardSize = shardSize
 		u.ownedState.localSeriesLimit = localLimitNew
+		u.ownedState.localActiveSeriesLimit = localActiveLimitNew
 
 		u.ownedStateMtx.Unlock()
 	}
@@ -591,10 +620,14 @@ func (u *userTSDB) recomputeOwnedSeriesWithComputeFn(shardSize int, reason strin
 		"reason", reason,
 		"ownedSeriesBefore", ownedSeriesBefore,
 		"ownedSeriesNew", ownedSeriesNew,
+		"ownedActiveSeriesBefore", ownedActiveSeriesBefore,
+		"ownedActiveSeriesNew", ownedActiveSeriesNew,
 		"shardSizeBefore", shardSizeBefore,
 		"shardSizeNew", shardSize,
 		"localLimitBefore", localLimitBefore,
 		"localLimitNew", localLimitNew,
+		"localActiveLimitBefore", localActiveLimitBefore,
+		"localActiveLimitNew", localActiveLimitNew,
 		"duration", time.Since(start),
 		"attempts", attempts,
 		"success", success)

@@ -50,7 +50,7 @@ type TSDBBuilder struct {
 var softErrProcessor = mimir_storage.NewSoftAppendErrorProcessor(
 	func() {}, func(int64, []mimirpb.LabelAdapter) {}, func(int64, []mimirpb.LabelAdapter) {},
 	func(int64, []mimirpb.LabelAdapter) {}, func(int64, []mimirpb.LabelAdapter) {}, func(string, int64, []mimirpb.LabelAdapter) {},
-	func([]mimirpb.LabelAdapter) {}, func([]mimirpb.LabelAdapter) {}, func(error, int64, []mimirpb.LabelAdapter) {},
+	func([]mimirpb.LabelAdapter) {}, func([]mimirpb.LabelAdapter) {}, func([]mimirpb.LabelAdapter) {}, func(error, int64, []mimirpb.LabelAdapter) {},
 	func(error, int64, []mimirpb.LabelAdapter) {}, func(error, int64, []mimirpb.LabelAdapter) {},
 	func(error, int64, []mimirpb.LabelAdapter) {}, func(error, int64, []mimirpb.LabelAdapter) {},
 	func(error, int64, []mimirpb.LabelAdapter) {}, func(error, int64, []mimirpb.LabelAdapter) {},
@@ -305,7 +305,7 @@ func (b *TSDBBuilder) newTSDB(tenant tsdbTenant) (*userTSDB, error) {
 	// has higher limits, the higher usage and increase is expected and capacity is planned accordingly
 	// and the tenant is generally more careful. It is the smaller tenants that can create problem
 	// if they suddenly send millions of series when they are supposed to be limited to a few thousand.
-	userLimit := b.limits.MaxGlobalSeriesPerUser(userID)
+	userLimit := b.limits.MaxGlobalSeriesPerUser(userID) // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 	if userLimit <= b.applyMaxGlobalSeriesPerUserBelow {
 		udb.maxGlobalSeries = userLimit
 	}

@@ -107,14 +107,15 @@ const (
 	instanceIngestionRateTickInterval = time.Second
 
 	// Reasons for discarding samples
-	reasonSampleOutOfOrder       = "sample-out-of-order"
-	reasonSampleTooOld           = "sample-too-old"
-	reasonSampleTooFarInFuture   = "sample-too-far-in-future"
-	reasonNewValueForTimestamp   = "new-value-for-timestamp"
-	reasonSampleTimestampTooOld  = "sample-timestamp-too-old"
-	reasonPerUserSeriesLimit     = "per_user_series_limit"
-	reasonPerMetricSeriesLimit   = "per_metric_series_limit"
-	reasonInvalidNativeHistogram = "invalid-native-histogram"
+	reasonSampleOutOfOrder         = "sample-out-of-order"
+	reasonSampleTooOld             = "sample-too-old"
+	reasonSampleTooFarInFuture     = "sample-too-far-in-future"
+	reasonNewValueForTimestamp     = "new-value-for-timestamp"
+	reasonSampleTimestampTooOld    = "sample-timestamp-too-old"
+	reasonPerUserSeriesLimit       = "per_user_series_limit"
+	reasonPerUserActiveSeriesLimit = "per_user_active_series_limit"
+	reasonPerMetricSeriesLimit     = "per_metric_series_limit"
+	reasonInvalidNativeHistogram   = "invalid-native-histogram"
 
 	replicationFactorStatsName             = "ingester_replication_factor"
 	ringStoreStatsName                     = "ingester_ring_store"
@@ -984,18 +985,19 @@ type extendedAppender interface {
 }
 
 type pushStats struct {
-	succeededSamplesCount       int
-	failedSamplesCount          int
-	succeededExemplarsCount     int
-	failedExemplarsCount        int
-	sampleTimestampTooOldCount  int
-	sampleOutOfOrderCount       int
-	sampleTooOldCount           int
-	sampleTooFarInFutureCount   int
-	newValueForTimestampCount   int
-	perUserSeriesLimitCount     int
-	perMetricSeriesLimitCount   int
-	invalidNativeHistogramCount int
+	succeededSamplesCount         int
+	failedSamplesCount            int
+	succeededExemplarsCount       int
+	failedExemplarsCount          int
+	sampleTimestampTooOldCount    int
+	sampleOutOfOrderCount         int
+	sampleTooOldCount             int
+	sampleTooFarInFutureCount     int
+	newValueForTimestampCount     int
+	perUserSeriesLimitCount       int
+	perUserActiveSeriesLimitCount int
+	perMetricSeriesLimitCount     int
+	invalidNativeHistogramCount   int
 }
 
 type ctxKey int
@@ -1300,6 +1302,13 @@ func (i *Ingester) PushWithCleanup(ctx context.Context, req *mimirpb.WriteReques
 				})
 			},
 			func(labels []mimirpb.LabelAdapter) {
+				stats.perUserActiveSeriesLimitCount++
+				cast.IncrementDiscardedSamples(labels, 1, reasonPerUserActiveSeriesLimit, startAppend)
+				updateFirstPartial(i.errorSamplers.maxActiveSeriesPerUserLimitExceeded, func() softError {
+					return newPerUserActiveSeriesLimitReachedError(i.limiter.limits.MaxActiveSeriesPerUser(userID))
+				})
+			},
+			func(labels []mimirpb.LabelAdapter) {
 				stats.perMetricSeriesLimitCount++
 				cast.IncrementDiscardedSamples(labels, 1, reasonPerMetricSeriesLimit, startAppend)
 				updateFirstPartial(i.errorSamplers.maxSeriesPerMetricLimitExceeded, func() softError {
@@ -1448,6 +1457,9 @@ func (i *Ingester) updateMetricsFromPushStats(userID string, group string, stats
 	}
 	if stats.perUserSeriesLimitCount > 0 {
 		discarded.perUserSeriesLimit.WithLabelValues(userID, group).Add(float64(stats.perUserSeriesLimitCount))
+	}
+	if stats.perUserActiveSeriesLimitCount > 0 {
+		discarded.perUserActiveSeriesLimit.WithLabelValues(userID, group).Add(float64(stats.perUserActiveSeriesLimitCount))
 	}
 	if stats.perMetricSeriesLimitCount > 0 {
 		discarded.perMetricSeriesLimit.WithLabelValues(userID, group).Add(float64(stats.perMetricSeriesLimitCount))

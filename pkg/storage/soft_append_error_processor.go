@@ -23,6 +23,7 @@ type SoftAppendErrorProcessor struct {
 	sampleTooFarInFuture           func(int64, []mimirpb.LabelAdapter)
 	errDuplicateSampleForTimestamp func(string, int64, []mimirpb.LabelAdapter)
 	maxSeriesPerUser               func(labels []mimirpb.LabelAdapter)
+	maxActiveSeriesPerUser         func(labels []mimirpb.LabelAdapter)
 	maxSeriesPerMetric             func(labels []mimirpb.LabelAdapter)
 	// Native histogram errors.
 	errHistogramCountMismatch        func(error, int64, []mimirpb.LabelAdapter)
@@ -44,6 +45,7 @@ func NewSoftAppendErrorProcessor(
 	sampleTooFarInFuture func(int64, []mimirpb.LabelAdapter),
 	errDuplicateSampleForTimestamp func(string, int64, []mimirpb.LabelAdapter),
 	maxSeriesPerUser func([]mimirpb.LabelAdapter),
+	maxActiveSeriesPerUser func([]mimirpb.LabelAdapter),
 	maxSeriesPerMetric func(labels []mimirpb.LabelAdapter),
 	errHistogramCountMismatch func(error, int64, []mimirpb.LabelAdapter),
 	errHistogramCountNotBigEnough func(error, int64, []mimirpb.LabelAdapter),
@@ -62,6 +64,7 @@ func NewSoftAppendErrorProcessor(
 		sampleTooFarInFuture:              sampleTooFarInFuture,
 		errDuplicateSampleForTimestamp:    errDuplicateSampleForTimestamp,
 		maxSeriesPerUser:                  maxSeriesPerUser,
+		maxActiveSeriesPerUser:            maxActiveSeriesPerUser,
 		maxSeriesPerMetric:                maxSeriesPerMetric,
 		errHistogramCountMismatch:         errHistogramCountMismatch,
 		errHistogramCountNotBigEnough:     errHistogramCountNotBigEnough,
@@ -98,6 +101,9 @@ func (e *SoftAppendErrorProcessor) ProcessErr(err error, ts int64, labels []mimi
 		return true
 	case errors.Is(err, globalerror.MaxSeriesPerUser):
 		e.maxSeriesPerUser(labels)
+		return true
+	case errors.Is(err, globalerror.MaxActiveSeriesPerUser):
+		e.maxActiveSeriesPerUser(labels)
 		return true
 	case errors.Is(err, globalerror.MaxSeriesPerMetric):
 		e.maxSeriesPerMetric(labels)

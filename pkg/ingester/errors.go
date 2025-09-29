@@ -254,6 +254,37 @@ var _ ingesterError = perUserSeriesLimitReachedError{}
 // Ensure that perUserSeriesLimitReachedError is an softError.
 var _ softError = perUserSeriesLimitReachedError{}
 
+// perUserActiveSeriesLimitReachedError is an ingesterError indicating that a per-user active series limit has been reached.
+type perUserActiveSeriesLimitReachedError struct {
+	limit int
+}
+
+// newPerUserActiveSeriesLimitReachedError creates a new perUserActiveSeriesLimitReachedError indicating that a per-user active series limit has been reached.
+func newPerUserActiveSeriesLimitReachedError(limit int) perUserActiveSeriesLimitReachedError {
+	return perUserActiveSeriesLimitReachedError{
+		limit: limit,
+	}
+}
+
+func (e perUserActiveSeriesLimitReachedError) Error() string {
+	return globalerror.MaxActiveSeriesPerUser.MessageWithPerTenantLimitConfig(
+		fmt.Sprintf("per-user active series limit of %d exceeded", e.limit),
+		validation.MaxSeriesPerUserFlag,
+	)
+}
+
+func (e perUserActiveSeriesLimitReachedError) errorCause() mimirpb.ErrorCause {
+	return mimirpb.TENANT_LIMIT
+}
+
+func (e perUserActiveSeriesLimitReachedError) soft() {}
+
+// Ensure that perUserSeriesLimitReachedError is an ingesterError.
+var _ ingesterError = perUserActiveSeriesLimitReachedError{}
+
+// Ensure that perUserSeriesLimitReachedError is an softError.
+var _ softError = perUserActiveSeriesLimitReachedError{}
+
 // perUserMetadataLimitReachedError is an ingesterError indicating that a per-user metadata limit has been reached.
 type perUserMetadataLimitReachedError struct {
 	limit int
@@ -513,20 +544,22 @@ func (e reactiveLimiterExceededError) errorCause() mimirpb.ErrorCause {
 var _ ingesterError = reactiveLimiterExceededError{}
 
 type ingesterErrSamplers struct {
-	sampleTimestampTooOld             *log.Sampler
-	sampleTimestampTooOldOOOEnabled   *log.Sampler
-	sampleTimestampTooFarInFuture     *log.Sampler
-	sampleOutOfOrder                  *log.Sampler
-	sampleDuplicateTimestamp          *log.Sampler
-	maxSeriesPerMetricLimitExceeded   *log.Sampler
-	maxMetadataPerMetricLimitExceeded *log.Sampler
-	maxSeriesPerUserLimitExceeded     *log.Sampler
-	maxMetadataPerUserLimitExceeded   *log.Sampler
-	nativeHistogramValidationError    *log.Sampler
+	sampleTimestampTooOld               *log.Sampler
+	sampleTimestampTooOldOOOEnabled     *log.Sampler
+	sampleTimestampTooFarInFuture       *log.Sampler
+	sampleOutOfOrder                    *log.Sampler
+	sampleDuplicateTimestamp            *log.Sampler
+	maxSeriesPerMetricLimitExceeded     *log.Sampler
+	maxMetadataPerMetricLimitExceeded   *log.Sampler
+	maxSeriesPerUserLimitExceeded       *log.Sampler
+	maxActiveSeriesPerUserLimitExceeded *log.Sampler
+	maxMetadataPerUserLimitExceeded     *log.Sampler
+	nativeHistogramValidationError      *log.Sampler
 }
 
 func newIngesterErrSamplers(freq int64) ingesterErrSamplers {
 	return ingesterErrSamplers{
+		log.NewSampler(freq),
 		log.NewSampler(freq),
 		log.NewSampler(freq),
 		log.NewSampler(freq),

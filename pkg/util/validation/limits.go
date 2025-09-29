@@ -37,6 +37,7 @@ const (
 	MaxSeriesPerMetricFlag                    = "ingester.max-global-series-per-metric"
 	MaxMetadataPerMetricFlag                  = "ingester.max-global-metadata-per-metric"
 	MaxSeriesPerUserFlag                      = "ingester.max-global-series-per-user"
+	MaxActiveSeriesPerUserFlag                = "ingester.max-global-active-series-per-user"
 	MaxMetadataPerUserFlag                    = "ingester.max-global-metadata-per-user"
 	MaxChunksPerQueryFlag                     = "querier.max-fetched-chunks-per-query"
 	MaxChunkBytesPerQueryFlag                 = "querier.max-fetched-chunk-bytes-per-query"
@@ -156,6 +157,7 @@ type Limits struct {
 	// Ingester enforced limits.
 	// Series
 	MaxGlobalSeriesPerUser   int `yaml:"max_global_series_per_user" json:"max_global_series_per_user"`
+	MaxActiveSeriesPerUser   int `yaml:"max_active_series_per_user" json:"max_active_series_per_user"`
 	MaxGlobalSeriesPerMetric int `yaml:"max_global_series_per_metric" json:"max_global_series_per_metric"`
 	// Metadata
 	MaxGlobalMetricsWithMetadataPerUser int `yaml:"max_global_metadata_per_user" json:"max_global_metadata_per_user"`
@@ -354,6 +356,7 @@ func (l *Limits) RegisterFlags(f *flag.FlagSet) {
 	f.Var(&l.IngestionArtificialDelayDurationForTenantsWithIDGreaterThan, "distributor.ingestion-artificial-delay-duration-for-tenants-with-id-greater-than", "Target ingestion delay to apply to tenants with a numeric ID whose value is greater than -distributor.ingestion-artificial-delay-condition-for-tenants-with-id-greater-than.")
 
 	f.IntVar(&l.MaxGlobalSeriesPerUser, MaxSeriesPerUserFlag, 150000, "The maximum number of in-memory series per tenant, across the cluster before replication. 0 to disable.")
+	f.IntVar(&l.MaxActiveSeriesPerUser, MaxActiveSeriesPerUserFlag, 0, "Maximum number of active series per user. 0 means no limit. This limit only applies with ingest storage enabled.")
 	f.IntVar(&l.MaxGlobalSeriesPerMetric, MaxSeriesPerMetricFlag, 0, "The maximum number of in-memory series per metric name, across the cluster before replication. 0 to disable.")
 
 	f.IntVar(&l.MaxGlobalMetricsWithMetadataPerUser, MaxMetadataPerUserFlag, 0, "The maximum number of in-memory metrics with metadata per tenant, across the cluster. 0 to disable.")
@@ -768,6 +771,18 @@ func (o *Overrides) PastGracePeriod(userID string) time.Duration {
 // MaxGlobalSeriesPerUser returns the maximum number of series a user is allowed to store across the cluster.
 func (o *Overrides) MaxGlobalSeriesPerUser(userID string) int {
 	return o.getOverridesForUser(userID).MaxGlobalSeriesPerUser
+}
+
+// MaxActiveSeriesPerUser returns the maximum number of active series a user is allowed to store across the cluster.
+func (o *Overrides) MaxActiveSeriesPerUser(userID string) int {
+	overrides := o.getOverridesForUser(userID)
+	limit := overrides.MaxActiveSeriesPerUser
+	// TODO temporary to simplify testing.
+	if limit == 0 {
+		// Fallback to MaxGlobalSeriesPerUser if no per-user active series limit is set.
+		limit = overrides.MaxGlobalSeriesPerUser
+	}
+	return limit
 }
 
 // MaxGlobalSeriesPerMetric returns the maximum number of series allowed per metric across the cluster.

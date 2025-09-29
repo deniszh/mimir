@@ -16,6 +16,7 @@ import (
 // limiterTenantLimits provides access to limits used by Limiter.
 type limiterTenantLimits interface {
 	MaxGlobalSeriesPerUser(userID string) int
+	MaxActiveSeriesPerUser(userID string) int
 	MaxGlobalSeriesPerMetric(userID string) int
 	MaxGlobalMetadataPerMetric(userID string) int
 	MaxGlobalMetricsWithMetadataPerUser(userID string) int
@@ -58,6 +59,13 @@ func (l *Limiter) IsWithinMaxSeriesPerUser(userID string, series int, minLocalLi
 	return series < actualLimit
 }
 
+// IsWithinMaxActiveSeriesPerUser returns true if limit has not been reached compared to the current
+// number of active series in input; otherwise returns false.
+func (l *Limiter) IsWithinMaxActiveSeriesPerUser(userID string, series int, minLocalLimit int) bool {
+	actualLimit := l.maxActiveSeriesPerUser(userID, minLocalLimit)
+	return series < actualLimit
+}
+
 // IsWithinMaxMetricsWithMetadataPerUser returns true if limit has not been reached compared to the current
 // number of metrics with metadata in input; otherwise returns false.
 func (l *Limiter) IsWithinMaxMetricsWithMetadataPerUser(userID string, metrics int) bool {
@@ -75,6 +83,10 @@ func (l *Limiter) maxMetadataPerMetric(userID string) int {
 
 func (l *Limiter) maxSeriesPerUser(userID string, minLocalLimit int) int {
 	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.limits.MaxGlobalSeriesPerUser, minLocalLimit)
+}
+
+func (l *Limiter) maxActiveSeriesPerUser(userID string, minLocalLimit int) int {
+	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.limits.MaxActiveSeriesPerUser, minLocalLimit) // XXXXXXXXXXXXXXX
 }
 
 func (l *Limiter) maxMetadataPerUser(userID string) int {
