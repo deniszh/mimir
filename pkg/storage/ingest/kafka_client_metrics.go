@@ -3,6 +3,7 @@
 package ingest
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -14,6 +15,8 @@ var (
 	// interface checks to ensure we implement the hooks properly.
 	_ kgo.HookBrokerE2E      = new(KafkaClientExtendedMetrics)
 	_ kgo.HookBrokerThrottle = new(KafkaClientExtendedMetrics)
+	_ kgo.HookBrokerRead     = new(KafkaClientExtendedMetrics)
+	_ kgo.HookBrokerWrite    = new(KafkaClientExtendedMetrics)
 )
 
 // KafkaClientExtendedMetrics holds custom Kafka client metrics.
@@ -32,6 +35,10 @@ type KafkaClientExtendedMetrics struct {
 	// Requests.
 	requestDurationE2ESeconds prometheus.Histogram
 	requestThrottledSeconds   prometheus.Histogram
+
+	// Per-broker network traffic.
+	brokerReadBytesTotal  *prometheus.CounterVec
+	brokerWriteBytesTotal *prometheus.CounterVec
 }
 
 func NewKafkaClientExtendedMetrics(reg prometheus.Registerer) *KafkaClientExtendedMetrics {
@@ -84,6 +91,14 @@ func NewKafkaClientExtendedMetrics(reg prometheus.Registerer) *KafkaClientExtend
 			NativeHistogramMinResetDuration: 1 * time.Hour,
 			Buckets:                         prometheus.DefBuckets,
 		}),
+		brokerReadBytesTotal: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "kafka_broker_read_bytes_total",
+			Help: "Total bytes read from Kafka brokers.",
+		}, []string{"node_id"}),
+		brokerWriteBytesTotal: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "kafka_broker_write_bytes_total",
+			Help: "Total bytes written to Kafka brokers.",
+		}, []string{"node_id"}),
 	}
 }
 
@@ -99,4 +114,16 @@ func (m *KafkaClientExtendedMetrics) OnBrokerE2E(_ kgo.BrokerMetadata, _ int16, 
 // OnBrokerThrottle implements kgo.HookBrokerThrottle.
 func (m *KafkaClientExtendedMetrics) OnBrokerThrottle(_ kgo.BrokerMetadata, throttleInterval time.Duration, _ bool) {
 	m.requestThrottledSeconds.Observe(throttleInterval.Seconds())
+}
+
+// OnBrokerRead implements kgo.HookBrokerRead.
+func (m *KafkaClientExtendedMetrics) OnBrokerRead(meta kgo.BrokerMetadata, _ int16, bytesRead int, _, _ time.Duration, _ error) {
+	nodeID := strconv.Itoa(int(meta.NodeID))
+	m.brokerReadBytesTotal.WithLabelValues(nodeID).Add(float64(bytesRead))
+}
+
+// OnBrokerWrite implements kgo.HookBrokerWrite.
+func (m *KafkaClientExtendedMetrics) OnBrokerWrite(meta kgo.BrokerMetadata, _ int16, bytesWritten int, _, _ time.Duration, _ error) {
+	nodeID := strconv.Itoa(int(meta.NodeID))
+	m.brokerWriteBytesTotal.WithLabelValues(nodeID).Add(float64(bytesWritten))
 }
