@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// Name is the name of the S2 compressor.
+	// Name is the name of the ZSTD compressor.
 	Name = "zstd"
 )
 
