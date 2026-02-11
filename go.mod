@@ -55,6 +55,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.19.0
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.83.0
+	github.com/boris-chu/go-openzl v0.3.4
 	github.com/cortexproject/promqlsmith v0.0.0-20250908165950-c3fd3c65d5c0
 	github.com/dennwc/varint v1.0.0
 	github.com/felixge/fgprof v0.9.5
@@ -296,7 +297,7 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
-	github.com/klauspost/compress v1.18.0
+	github.com/klauspost/compress v1.18.1
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
