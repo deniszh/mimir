@@ -11,12 +11,11 @@ import (
 	"sync"
 
 	"github.com/boris-chu/go-openzl"
-	"github.com/klauspost/compress/zstd"
 	"google.golang.org/grpc/encoding"
 )
 
 const (
-	// Name is the name of the S2 compressor.
+	// Name is the name of the OpenZL compressor.
 	Name = "openzl"
 )
 
@@ -27,12 +26,12 @@ type compressor struct {
 }
 
 type writer struct {
-	*openzl.Compressor
+	*openzl.Writer
 	pool *sync.Pool
 }
 
 type reader struct {
-	*openzl.Decompressor
+	*openzl.Reader
 	pool *sync.Pool
 }
 
@@ -49,7 +48,7 @@ func newCompressor() *compressor {
 		if err != nil {
 			return nil
 		}
-		return &writer{Compressor: w, pool: &c.poolCompressor}
+		return &writer{Writer: w, pool: &c.poolCompressor}
 	}
 	return c
 }
@@ -62,11 +61,11 @@ func (c *compressor) Compress(w io.Writer) (io.WriteCloser, error) {
 func (c *compressor) Decompress(r io.Reader) (io.Reader, error) {
 	z, inPool := c.poolDecompressor.Get().(*reader)
 	if !inPool {
-		newR, err := zstd.NewReader(r)
+		newR, err := openzl.NewReader(r)
 		if err != nil {
 			return nil, err
 		}
-		return &reader{Decompressor: newR, pool: &c.poolDecompressor}, nil
+		return &reader{Reader: newR, pool: &c.poolDecompressor}, nil
 	}
 	return z, nil
 }
@@ -76,13 +75,13 @@ func (c *compressor) Name() string {
 }
 
 func (zw *writer) Close() error {
-	err := zw.Compressor.Close()
+	err := zw.Writer.Close()
 	zw.pool.Put(zw)
 	return err
 }
 
 func (zr *reader) Read(p []byte) (n int, err error) {
-	n, err = zr.Decompressor.Read(p)
+	n, err = zr.Reader.Read(p)
 	if errors.Is(err, io.EOF) {
 		zr.pool.Put(zr)
 	}
