@@ -324,6 +324,14 @@ github.com/beorn7/perks/quantile
 # github.com/bits-and-blooms/bitset v1.20.0
 ## explicit; go 1.16
 github.com/bits-and-blooms/bitset
+# github.com/boris-chu/go-openzl v0.3.4
+## explicit; go 1.24.4
+github.com/boris-chu/go-openzl
+github.com/boris-chu/go-openzl/internal/cgo
+github.com/boris-chu/go-openzl/internal/codec
+github.com/boris-chu/go-openzl/internal/frame
+github.com/boris-chu/go-openzl/internal/graph
+github.com/boris-chu/go-openzl/purgo
 # github.com/cenkalti/backoff/v4 v4.3.0
 ## explicit; go 1.18
 github.com/cenkalti/backoff/v4
@@ -958,8 +966,8 @@ github.com/json-iterator/go
 # github.com/julienschmidt/httprouter v1.3.0
 ## explicit; go 1.7
 github.com/julienschmidt/httprouter
-# github.com/klauspost/compress v1.18.0
-## explicit; go 1.22
+# github.com/klauspost/compress v1.18.1
+## explicit; go 1.23
 github.com/klauspost/compress
 github.com/klauspost/compress/flate
 github.com/klauspost/compress/fse

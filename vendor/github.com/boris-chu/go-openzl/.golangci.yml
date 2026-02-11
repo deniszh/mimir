@@ -1,0 +1,119 @@
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - shadow
+  gocyclo:
+    min-complexity: 20  # Allow slightly higher complexity for parser code
+  dupl:
+    threshold: 100
+  goconst:
+    min-len: 2
+    min-occurrences: 4  # Increase threshold to avoid noise
+  misspell:
+    locale: US
+  lll:
+    line-length: 140
+  goimports:
+    local-prefixes: github.com/borischu/go-openzl
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      - dupImport
+      - ifElseChain
+      - octalLiteral
+      - whyNoLint
+      - appendAssign  # False positives with append(a, b...)
+      - builtinShadowDecl  # Allow min/max helpers in tests
+      - unnamedResult  # Allow unnamed results for simple functions
+
+linters:
+  disable-all: true
+  enable:
+    - bodyclose
+    - dogsled
+    - dupl
+    - errcheck
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - noctx
+    - nolintlint
+    - staticcheck
+    - stylecheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+        - lll
+        - govet  # Allow fieldalignment issues in test structs
+        - unconvert  # Allow unnecessary conversions in tests for clarity
+    - path: internal/cgo/
+      linters:
+        - all
+      text: "CGO"
+    - path: test/tools/
+      linters:
+        - all  # Ignore linter issues in utility tools
+    - path: internal/codec/(delta|zigzag|constant)\.go
+      linters:
+        - dupl  # Codec encode/decode functions have similar structure by design
+    - path: purgo/decoder\.go
+      linters:
+        - dupl  # Typed decompression functions have similar structure by design (type safety)
+    - path: internal/codec/bitpack\.go
+      linters:
+        - gocyclo  # Bitpack encode has high complexity due to bit manipulation
+    - linters:
+        - govet
+      text: "fieldalignment"  # Disable fieldalignment globally (micro-optimization)
+    - linters:
+        - govet
+      text: "unusedwrite"  # Allow unused struct field writes (test setup)
+    - linters:
+        - gosec
+      text: "G115"  # Allow integer conversions (checked at runtime)
+    - linters:
+        - staticcheck
+      text: "SA6002"  # Allow value copies (not performance critical)
+    - linters:
+        - staticcheck
+      text: "SA9003"  # Allow empty branches (fuzz test error handling)
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - integration
+
+output:
+  formats:
+    - format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
