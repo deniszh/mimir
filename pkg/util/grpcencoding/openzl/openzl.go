@@ -10,7 +10,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/boris-chu/go-openzl"
+	"github.com/boris-chu/go-openzl/purgo"
 	"google.golang.org/grpc/encoding"
 )
 
@@ -26,12 +26,12 @@ type compressor struct {
 }
 
 type writer struct {
-	*openzl.Writer
+	*purgo.Writer
 	pool *sync.Pool
 }
 
 type reader struct {
-	*openzl.Reader
+	*purgo.Reader
 	pool *sync.Pool
 }
 
@@ -44,7 +44,7 @@ func newCompressor() *compressor {
 		name: Name,
 	}
 	c.poolCompressor.New = func() interface{} {
-		w, err := openzl.NewWriter(io.Discard)
+		w, err := purgo.NewWriter(io.Discard)
 		if err != nil {
 			return nil
 		}
@@ -55,13 +55,14 @@ func newCompressor() *compressor {
 
 func (c *compressor) Compress(w io.Writer) (io.WriteCloser, error) {
 	z := c.poolCompressor.Get().(*writer)
+	z.Writer.w.Reset(w)
 	return z, nil
 }
 
 func (c *compressor) Decompress(r io.Reader) (io.Reader, error) {
 	z, inPool := c.poolDecompressor.Get().(*reader)
 	if !inPool {
-		newR, err := openzl.NewReader(r)
+		newR, err := purgo.NewReader(r)
 		if err != nil {
 			return nil, err
 		}
