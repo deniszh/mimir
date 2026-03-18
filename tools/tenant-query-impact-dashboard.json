@@ -418,17 +418,98 @@
           "id": 31,
           "options": {
             "showHeader": true,
-            "sortBy": [{ "displayName": "fetched_series_count", "desc": true }]
+            "sortBy": [{ "displayName": "Series", "desc": true }],
+            "frameIndex": 0
           },
-          "fieldConfig": { "defaults": {}, "overrides": [] },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Query" },
+                "properties": [{ "id": "custom.width", "value": 500 }]
+              }
+            ]
+          },
           "targets": [
             {
               "datasource": { "type": "loki", "uid": "${loki_datasource}" },
-              "expr": "{cluster=\"$cluster\", namespace=\"$namespace\", container=~\"query-frontend.*\"} |= \"query stats\" | logfmt | user=~\"$tenant\" | fetched_series_count > 10000 | line_format \"user={{.user}} series={{.fetched_series_count}} chunks={{.fetched_chunks_count}} chunk_bytes={{.fetched_chunk_bytes}} wall={{.query_wall_time_seconds}}s status={{.status}} query={{.param_query}}\"",
+              "expr": "{namespace=\"$namespace\", container=~\"query-frontend.*\", app=\"mimir\"} |= \"query stats\" | json | line_format \"{{.log}}\" | logfmt | user=~\"$tenant\" | fetched_series_count > 10000",
               "refId": "A"
             }
           ],
-          "transformations": []
+          "transformations": [
+            {
+              "id": "extractFields",
+              "options": {
+                "source": "labels",
+                "format": "auto"
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "labels": true,
+                  "tsNs": true,
+                  "id": true,
+                  "Line": true,
+                  "labelTypes": true,
+                  "ts": true,
+                  "caller": true,
+                  "level": true,
+                  "msg": true,
+                  "component": true,
+                  "method": true,
+                  "path": true,
+                  "route_name": true,
+                  "user_agent": true,
+                  "status_code": true,
+                  "response_time": true,
+                  "response_size_bytes": true,
+                  "fetched_index_bytes": true,
+                  "sharded_queries": true,
+                  "split_queries": true,
+                  "spun_off_subqueries": true,
+                  "estimated_series_count": true,
+                  "queue_time_seconds": true,
+                  "encode_time_seconds": true,
+                  "samples_processed": true,
+                  "samples_processed_cache_adjusted": true,
+                  "param_end": true,
+                  "param_start": true,
+                  "param_step": true,
+                  "length": true,
+                  "time_since_min_time": true,
+                  "time_since_max_time": true,
+                  "results_cache_hit_bytes": true,
+                  "results_cache_miss_bytes": true,
+                  "header_cache_control": true,
+                  "read_consistency": true,
+                  "read_consistency_max_delay": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "user": 1,
+                  "fetched_series_count": 2,
+                  "fetched_chunks_count": 3,
+                  "fetched_chunk_bytes": 4,
+                  "query_wall_time_seconds": 5,
+                  "status": 6,
+                  "param_query": 7
+                },
+                "renameByName": {
+                  "Time": "Time",
+                  "user": "User",
+                  "fetched_series_count": "Series",
+                  "fetched_chunks_count": "Chunks",
+                  "fetched_chunk_bytes": "Chunk Bytes",
+                  "query_wall_time_seconds": "Wall Time (s)",
+                  "status": "Status",
+                  "param_query": "Query"
+                }
+              }
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -451,7 +532,7 @@
           "targets": [
             {
               "datasource": { "type": "loki", "uid": "${loki_datasource}" },
-              "expr": "topk(10, quantile_over_time(0.99, {cluster=\"$cluster\", namespace=\"$namespace\", container=~\"query-frontend.*\"} |= \"query stats\" | logfmt | unwrap fetched_series_count [$__auto]) by (user))",
+              "expr": "topk(10, quantile_over_time(0.99, {namespace=\"$namespace\", container=~\"query-frontend.*\", app=\"mimir\"} |= \"query stats\" | json | line_format \"{{.log}}\" | logfmt | unwrap fetched_series_count [$__auto]) by (user))",
               "legendFormat": "{{user}}"
             }
           ]
@@ -477,7 +558,7 @@
           "targets": [
             {
               "datasource": { "type": "loki", "uid": "${loki_datasource}" },
-              "expr": "topk(10, quantile_over_time(0.99, {cluster=\"$cluster\", namespace=\"$namespace\", container=~\"query-frontend.*\"} |= \"query stats\" | logfmt | unwrap query_wall_time_seconds [$__auto]) by (user))",
+              "expr": "topk(10, quantile_over_time(0.99, {namespace=\"$namespace\", container=~\"query-frontend.*\", app=\"mimir\"} |= \"query stats\" | json | line_format \"{{.log}}\" | logfmt | unwrap query_wall_time_seconds [$__auto]) by (user))",
               "legendFormat": "{{user}}"
             }
           ]
@@ -503,7 +584,7 @@
           "targets": [
             {
               "datasource": { "type": "loki", "uid": "${loki_datasource}" },
-              "expr": "topk(10, sum by (user) (sum_over_time({cluster=\"$cluster\", namespace=\"$namespace\", container=~\"query-frontend.*\"} |= \"query stats\" | logfmt | unwrap fetched_chunk_bytes [$__auto])))",
+              "expr": "topk(10, sum by (user) (sum_over_time({namespace=\"$namespace\", container=~\"query-frontend.*\", app=\"mimir\"} |= \"query stats\" | json | line_format \"{{.log}}\" | logfmt | unwrap fetched_chunk_bytes [$__auto])))",
               "legendFormat": "{{user}}"
             }
           ]
@@ -529,7 +610,7 @@
           "targets": [
             {
               "datasource": { "type": "loki", "uid": "${loki_datasource}" },
-              "expr": "sum by (user, status) (count_over_time({cluster=\"$cluster\", namespace=\"$namespace\", container=~\"query-frontend.*\"} |= \"query stats\" | logfmt | user=~\"$tenant\" | status!=\"success\" [$__auto]))",
+              "expr": "sum by (user, status) (count_over_time({namespace=\"$namespace\", container=~\"query-frontend.*\", app=\"mimir\"} |= \"query stats\" | json | line_format \"{{.log}}\" | logfmt | user=~\"$tenant\" | status!=\"success\" [$__auto]))",
               "legendFormat": "{{user}} ({{status}})"
             }
           ]
