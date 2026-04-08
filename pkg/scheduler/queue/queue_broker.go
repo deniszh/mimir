@@ -33,7 +33,7 @@ type queueBroker struct {
 	tenantQuerierAssignments *tenantQuerierShards
 	querierConnections       *querierConnections
 
-	maxTenantQueueSize int
+	defaultMaxTenantQueueSize int
 }
 
 func newQueueBroker(
@@ -55,10 +55,10 @@ func newQueueBroker(
 		panic(fmt.Sprintf("error creating the tree queue: %v", err))
 	}
 	qb := &queueBroker{
-		tree:                     treeQueue,
-		querierConnections:       qc,
-		tenantQuerierAssignments: tqas,
-		maxTenantQueueSize:       maxTenantQueueSize,
+		tree:                      treeQueue,
+		querierConnections:        qc,
+		tenantQuerierAssignments:  tqas,
+		defaultMaxTenantQueueSize: maxTenantQueueSize,
 	}
 
 	return qb
@@ -71,7 +71,7 @@ func (qb *queueBroker) isEmpty() bool {
 // enqueueRequestBack is the standard interface to enqueue requests for dispatch to queriers.
 //
 // Tenants and tenant-querier shuffle sharding relationships are managed internally as needed.
-func (qb *queueBroker) enqueueRequestBack(request *tenantRequest, tenantMaxQueriers int) error {
+func (qb *queueBroker) enqueueRequestBack(request *tenantRequest, tenantMaxQueriers int, maxOutstanding int) error {
 	err := qb.tenantQuerierAssignments.createOrUpdateTenant(request.tenantID, tenantMaxQueriers)
 	if err != nil {
 		return err
@@ -82,8 +82,12 @@ func (qb *queueBroker) enqueueRequestBack(request *tenantRequest, tenantMaxQueri
 		return err
 	}
 
+	if maxOutstanding <= 0 {
+		maxOutstanding = qb.defaultMaxTenantQueueSize
+	}
+
 	tenantQueueSize := qb.tenantQuerierAssignments.queuingAlgorithm.TotalQueueSizeForTenant(request.tenantID)
-	if tenantQueueSize+1 > qb.maxTenantQueueSize {
+	if maxOutstanding > 0 && tenantQueueSize+1 > maxOutstanding {
 		return ErrTooManyRequests
 	}
 

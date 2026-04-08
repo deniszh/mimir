@@ -205,11 +205,12 @@ func (qwo *querierWorkerOperation) AwaitQuerierWorkerConnUpdate() error {
 }
 
 type requestToEnqueue struct {
-	tenantID    string
-	req         QueryRequest
-	maxQueriers int
-	successFn   func()
-	errChan     chan error
+	tenantID       string
+	req            QueryRequest
+	maxQueriers    int
+	maxOutstanding int
+	successFn      func()
+	errChan        chan error
 }
 
 func NewRequestQueue(
@@ -373,7 +374,12 @@ func (q *RequestQueue) enqueueRequestInternal(r requestToEnqueue) error {
 		tenantID: r.tenantID,
 		req:      r.req,
 	}
-	err := q.queueBroker.enqueueRequestBack(&tr, r.maxQueriers)
+	maxOutstanding := r.maxOutstanding
+	if maxOutstanding <= 0 {
+		maxOutstanding = q.maxOutstandingPerTenant
+	}
+
+	err := q.queueBroker.enqueueRequestBack(&tr, r.maxQueriers, maxOutstanding)
 	if err != nil {
 		if errors.Is(err, ErrTooManyRequests) {
 			q.discardedRequests.WithLabelValues(r.tenantID).Inc()
@@ -442,18 +448,19 @@ func (q *RequestQueue) trySendNextRequestForQuerier(dequeueReq *QuerierWorkerDeq
 //
 // maxQueriers is tenant-specific value to compute which queriers should handle requests for this tenant.
 // It is passed to SubmitRequestToEnqueue because the value can change between calls.
-func (q *RequestQueue) SubmitRequestToEnqueue(tenantID string, req QueryRequest, maxQueriers int, successFn func()) error {
+func (q *RequestQueue) SubmitRequestToEnqueue(tenantID string, req QueryRequest, maxQueriers int, maxOutstanding int, successFn func()) error {
 	start := time.Now()
 	defer func() {
 		q.enqueueDuration.Observe(time.Since(start).Seconds())
 	}()
 
 	r := requestToEnqueue{
-		tenantID:    tenantID,
-		req:         req,
-		maxQueriers: maxQueriers,
-		successFn:   successFn,
-		errChan:     make(chan error),
+		tenantID:       tenantID,
+		req:            req,
+		maxQueriers:    maxQueriers,
+		maxOutstanding: maxOutstanding,
+		successFn:      successFn,
+		errChan:        make(chan error),
 	}
 
 	select {

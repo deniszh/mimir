@@ -238,7 +238,7 @@ func TestQueuesRespectMaxTenantQueueSizeWithSubQueues(t *testing.T) {
 		for j := 0; j < maxTenantQueueSize/len(additionalQueueDimensions); j++ {
 			req.AdditionalQueueDimensions = additionalQueueDimensions[i]
 			tenantReq := &tenantRequest{tenantID: "tenant-1", req: req}
-			err := qb.enqueueRequestBack(tenantReq, 0)
+			err := qb.enqueueRequestBack(tenantReq, 0, 0)
 			assert.NoError(t, err)
 		}
 	}
@@ -275,7 +275,7 @@ func TestQueuesRespectMaxTenantQueueSizeWithSubQueues(t *testing.T) {
 		// is for the tenant queue or any of its subqueues
 		req.AdditionalQueueDimensions = additionalQueueDimension
 		tenantReq := &tenantRequest{tenantID: "tenant-1", req: req}
-		err := qb.enqueueRequestBack(tenantReq, 0)
+		err := qb.enqueueRequestBack(tenantReq, 0, 0)
 		assert.ErrorIs(t, err, ErrTooManyRequests)
 	}
 
@@ -290,12 +290,44 @@ func TestQueuesRespectMaxTenantQueueSizeWithSubQueues(t *testing.T) {
 
 	tenantReq := &tenantRequest{tenantID: "tenant-1", req: req}
 	// assert not hitting an error when enqueueing after dequeuing to below the limit
-	err = qb.enqueueRequestBack(tenantReq, 0)
+	err = qb.enqueueRequestBack(tenantReq, 0, 0)
 	assert.NoError(t, err)
 
 	// we then hit an error again, as we are back at the limit
-	err = qb.enqueueRequestBack(tenantReq, 0)
+	err = qb.enqueueRequestBack(tenantReq, 0, 0)
 	assert.ErrorIs(t, err, ErrTooManyRequests)
+}
+
+func TestQueueBrokerEnqueueRequestBackUsesPerRequestLimit(t *testing.T) {
+	qb := newQueueBroker(5, 0)
+	req := &tenantRequest{
+		tenantID: "tenant-1",
+		req: &SchedulerRequest{
+			Ctx:          context.Background(),
+			FrontendAddr: "http://query-frontend:8007",
+			UserID:       "tenant-1",
+			HttpRequest:  &httpgrpc.HTTPRequest{},
+		},
+	}
+
+	require.NoError(t, qb.enqueueRequestBack(req, 0, 2))
+	require.NoError(t, qb.enqueueRequestBack(req, 0, 2))
+	require.ErrorIs(t, qb.enqueueRequestBack(req, 0, 2), ErrTooManyRequests)
+
+	otherReq := &tenantRequest{
+		tenantID: "tenant-2",
+		req: &SchedulerRequest{
+			Ctx:          context.Background(),
+			FrontendAddr: "http://query-frontend:8007",
+			UserID:       "tenant-2",
+			HttpRequest:  &httpgrpc.HTTPRequest{},
+		},
+	}
+
+	for range 5 {
+		require.NoError(t, qb.enqueueRequestBack(otherReq, 0, 0))
+	}
+	require.ErrorIs(t, qb.enqueueRequestBack(otherReq, 0, 0), ErrTooManyRequests)
 }
 
 func TestQueuesOnTerminatingQuerier(t *testing.T) {

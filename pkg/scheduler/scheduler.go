@@ -228,6 +228,8 @@ func NewScheduler(cfg Config, limits Limits, log log.Logger, registerer promethe
 type Limits interface {
 	// MaxQueriersPerUser returns max queriers to use per tenant, or 0 if shuffle sharding is disabled.
 	MaxQueriersPerUser(user string) int
+	// MaxOutstandingRequestsPerUser returns the maximum number of queued requests per tenant, or 0 to use the scheduler default.
+	MaxOutstandingRequestsPerUser(user string) int
 }
 
 // FrontendLoop handles connection from frontend.
@@ -397,12 +399,34 @@ func (s *Scheduler) enqueueRequest(requestContext context.Context, frontendAddr 
 		return err
 	}
 	maxQueriers := validation.SmallestPositiveNonZeroIntPerTenant(tenantIDs, s.limits.MaxQueriersPerUser)
+	maxOutstanding := s.smallestMaxOutstandingRequestsPerTenant(tenantIDs)
 
 	s.activeUsers.UpdateUserTimestamp(userID, now)
-	return s.requestQueue.SubmitRequestToEnqueue(userID, req, maxQueriers, func() {
+	return s.requestQueue.SubmitRequestToEnqueue(userID, req, maxQueriers, maxOutstanding, func() {
 		shouldCancel = false
 		s.addRequestToPending(req)
 	})
+}
+
+func (s *Scheduler) smallestMaxOutstandingRequestsPerTenant(tenantIDs []string) int {
+	smallest := 0
+
+	for _, tenantID := range tenantIDs {
+		limit := s.limits.MaxOutstandingRequestsPerUser(tenantID)
+		if limit <= 0 {
+			limit = s.cfg.MaxOutstandingPerTenant
+		}
+
+		if limit <= 0 {
+			continue
+		}
+
+		if smallest == 0 || limit < smallest {
+			smallest = limit
+		}
+	}
+
+	return smallest
 }
 
 func (s *Scheduler) addRequestToPending(req *queue.SchedulerRequest) {
