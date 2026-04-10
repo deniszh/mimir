@@ -27,8 +27,9 @@ type BucketStoreMetrics struct {
 	seriesDataTouched     *prometheus.SummaryVec
 	seriesDataFetched     *prometheus.SummaryVec
 	seriesDataSizeTouched *prometheus.SummaryVec
-	seriesDataSizeFetched *prometheus.SummaryVec
-	seriesBlocksQueried   *prometheus.SummaryVec
+	seriesDataSizeFetched        *prometheus.SummaryVec
+	seriesDataSizeFetchedPerUser *prometheus.CounterVec
+	seriesBlocksQueried          *prometheus.SummaryVec
 	resultSeriesCount     prometheus.Summary
 	chunkSizeBytes        prometheus.Histogram
 	queriesDropped        *prometheus.CounterVec
@@ -91,6 +92,10 @@ func NewBucketStoreMetrics(reg prometheus.Registerer) *BucketStoreMetrics {
 		Name: "cortex_bucket_store_series_data_size_fetched_bytes",
 		Help: "Size of all items of a data type in a block were fetched for a single Series/LabelValues/LabelNames request. This includes chunks from the cache and the object storage.",
 	}, []string{"data_type", "stage"})
+	m.seriesDataSizeFetchedPerUser = promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+		Name: "cortex_bucket_store_series_data_size_fetched_bytes_per_user",
+		Help: "Total size of all items of a data type in a block were fetched per user. This includes chunks from the cache and the object storage.",
+	}, []string{"data_type", "stage", "user"})
 
 	m.seriesBlocksQueried = promauto.With(reg).NewSummaryVec(prometheus.SummaryOpts{
 		Name: "cortex_bucket_store_series_blocks_queried",
