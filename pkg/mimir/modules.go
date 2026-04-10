@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-kit/log"
@@ -24,6 +25,7 @@ import (
 	"github.com/grafana/dskit/ring"
 	"github.com/grafana/dskit/server"
 	"github.com/grafana/dskit/services"
+	"github.com/grafana/dskit/user"
 	"github.com/pkg/errors"
 	"github.com/prometheus/alertmanager/featurecontrol"
 	"github.com/prometheus/alertmanager/matchers/compat"
@@ -35,6 +37,7 @@ import (
 	prom_storage "github.com/prometheus/prometheus/storage"
 	prom_remote "github.com/prometheus/prometheus/storage/remote"
 	"github.com/spf13/afero"
+	"google.golang.org/grpc"
 
 	"github.com/grafana/mimir/pkg/alertmanager"
 	"github.com/grafana/mimir/pkg/alertmanager/alertstore"
@@ -337,6 +340,23 @@ func (t *Mimir) initServer() (services.Service, error) {
 
 	// Allow reporting HTTP 4xx codes in status_code label of request duration metrics
 	t.Cfg.Server.ReportHTTP4XXCodesInInstrumentationLabel = true
+
+	// Enable per-tenant request metrics for store-gateway gRPC routes only.
+	t.Cfg.Server.PerTenantInstrumentation = func(ctx context.Context) *middleware.PerTenantConfig {
+		method, ok := grpc.Method(ctx)
+		if !ok || !strings.HasPrefix(method, "/gatewaypb.StoreGateway/") {
+			return nil
+		}
+		tenantID, err := user.ExtractOrgID(ctx)
+		if err != nil || tenantID == "" {
+			return nil
+		}
+		return &middleware.PerTenantConfig{
+			TenantID:          tenantID,
+			DurationHistogram: true,
+			TotalCounter:      true,
+		}
+	}
 
 	// Mimir handles signals on its own.
 	DisableSignalHandling(&t.Cfg.Server)
