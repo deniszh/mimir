@@ -1110,9 +1110,11 @@ func (s *BucketStore) recordSeriesCallResult(safeStats *safeQueryStats) {
 
 	s.metrics.seriesDataFetched.WithLabelValues("chunks", "fetched").Observe(float64(stats.chunksFetched))
 	s.metrics.seriesDataSizeFetched.WithLabelValues("chunks", "fetched").Observe(float64(stats.chunksFetchedSizeSum))
+	s.metrics.seriesDataSizeFetchedPerUser.WithLabelValues("chunks", "fetched", s.userID).Add(float64(stats.chunksFetchedSizeSum))
 
 	s.metrics.seriesDataFetched.WithLabelValues("chunks", "refetched").Observe(float64(stats.chunksRefetched))
 	s.metrics.seriesDataSizeFetched.WithLabelValues("chunks", "refetched").Observe(float64(stats.chunksRefetchedSizeSum))
+	s.metrics.seriesDataSizeFetchedPerUser.WithLabelValues("chunks", "refetched", s.userID).Add(float64(stats.chunksRefetchedSizeSum))
 
 	for m, count := range stats.blocksQueriedByBlockMeta {
 		s.metrics.seriesBlocksQueried.WithLabelValues(string(m.source), m.level, strconv.FormatBool(m.outOfOrder)).Observe(float64(count))
@@ -1153,6 +1155,7 @@ func (s *BucketStore) recordPostingsStats(stats *queryStats) {
 	s.metrics.seriesDataFetched.WithLabelValues("postings", "").Observe(float64(stats.postingsFetched))
 	s.metrics.seriesDataSizeTouched.WithLabelValues("postings", "").Observe(float64(stats.postingsTouchedSizeSum))
 	s.metrics.seriesDataSizeFetched.WithLabelValues("postings", "").Observe(float64(stats.postingsFetchedSizeSum))
+	s.metrics.seriesDataSizeFetchedPerUser.WithLabelValues("postings", "", s.userID).Add(float64(stats.postingsFetchedSizeSum))
 }
 
 func (s *BucketStore) recordSeriesStats(stats *queryStats) {
@@ -1161,6 +1164,7 @@ func (s *BucketStore) recordSeriesStats(stats *queryStats) {
 	s.metrics.seriesDataFetched.WithLabelValues("series", "").Observe(float64(stats.seriesFetched))
 	s.metrics.seriesDataSizeTouched.WithLabelValues("series", "").Observe(float64(stats.seriesProcessedSizeSum))
 	s.metrics.seriesDataSizeFetched.WithLabelValues("series", "").Observe(float64(stats.seriesFetchedSizeSum))
+	s.metrics.seriesDataSizeFetchedPerUser.WithLabelValues("series", "", s.userID).Add(float64(stats.seriesFetchedSizeSum))
 	s.metrics.seriesRefetches.Add(float64(stats.seriesRefetches))
 }
 
