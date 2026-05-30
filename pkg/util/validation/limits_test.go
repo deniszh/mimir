@@ -62,6 +62,22 @@ func TestOverridesManager_GetOverrides(t *testing.T) {
 	require.Equal(t, 0, ov.MaxLabelValueLength("user2"))
 }
 
+func TestOverridesManager_GetOutstandingRequestsOverride(t *testing.T) {
+	defaults := Limits{
+		MaxOutstandingRequestsPerTenant: 100,
+	}
+	tenantLimits := map[string]*Limits{
+		"user1": {
+			MaxOutstandingRequestsPerTenant: 10,
+		},
+	}
+
+	ov := NewOverrides(defaults, NewMockTenantLimits(tenantLimits))
+
+	require.Equal(t, 10, ov.MaxOutstandingRequestsPerUser("user1"))
+	require.Equal(t, 100, ov.MaxOutstandingRequestsPerUser("user2"))
+}
+
 func TestLimitsLoadingFromYaml(t *testing.T) {
 	testCases := []struct {
 		name     string

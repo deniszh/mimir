@@ -206,6 +206,7 @@ type Limits struct {
 	MaxSeriesQueryLimit                   int            `yaml:"max_series_query_limit" json:"max_series_query_limit"`
 	MaxCacheFreshness                     model.Duration `yaml:"max_cache_freshness" json:"max_cache_freshness" category:"advanced"`
 	MaxQueriersPerTenant                  int            `yaml:"max_queriers_per_tenant" json:"max_queriers_per_tenant"`
+	MaxOutstandingRequestsPerTenant       int            `yaml:"max_outstanding_requests_per_tenant" json:"max_outstanding_requests_per_tenant" doc:"nocli|description=Maximum number of queued requests allowed per tenant in a single query-scheduler. If unset or set to 0, the query-scheduler uses its global -query-scheduler.max-outstanding-requests-per-tenant setting."`
 	QueryShardingTotalShards              int            `yaml:"query_sharding_total_shards" json:"query_sharding_total_shards"`
 	QueryShardingMaxShardedQueries        int            `yaml:"query_sharding_max_sharded_queries" json:"query_sharding_max_sharded_queries"`
 	QueryShardingMaxRegexpSizeBytes       int            `yaml:"query_sharding_max_regexp_size_bytes" json:"query_sharding_max_regexp_size_bytes"`
@@ -955,6 +956,11 @@ func (o *Overrides) MaxCacheFreshness(userID string) time.Duration {
 // MaxQueriersPerUser returns the maximum number of queriers that can handle requests for this user.
 func (o *Overrides) MaxQueriersPerUser(userID string) int {
 	return o.getOverridesForUser(userID).MaxQueriersPerTenant
+}
+
+// MaxOutstandingRequestsPerUser returns the maximum number of queued requests allowed for this user.
+func (o *Overrides) MaxOutstandingRequestsPerUser(userID string) int {
+	return o.getOverridesForUser(userID).MaxOutstandingRequestsPerTenant
 }
 
 // MaxQueryParallelism returns the limit to the number of split queries the

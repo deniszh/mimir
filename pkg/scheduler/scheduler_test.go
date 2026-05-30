@@ -72,11 +72,15 @@ func TestMain(m *testing.M) {
 }
 
 func setupScheduler(t *testing.T, reg prometheus.Registerer) (*Scheduler, schedulerpb.SchedulerForFrontendClient, schedulerpb.SchedulerForQuerierClient) {
+	return setupSchedulerWithLimits(t, reg, &limits{queriers: 2})
+}
+
+func setupSchedulerWithLimits(t *testing.T, reg prometheus.Registerer, schedulerLimits Limits) (*Scheduler, schedulerpb.SchedulerForFrontendClient, schedulerpb.SchedulerForQuerierClient) {
 	cfg := Config{}
 	flagext.DefaultValues(&cfg)
 	cfg.MaxOutstandingPerTenant = testMaxOutstandingPerTenant
 
-	s, err := NewScheduler(cfg, &limits{queriers: 2}, log.NewNopLogger(), reg)
+	s, err := NewScheduler(cfg, schedulerLimits, log.NewNopLogger(), reg)
 	require.NoError(t, err)
 
 	server := grpc.NewServer()
@@ -467,6 +471,63 @@ func TestSchedulerMaxOutstandingRequests(t *testing.T) {
 	require.Greater(t, len(spans), 0, "expected at least one span even if rejected by queue full")
 }
 
+func TestSchedulerMaxOutstandingRequestsUsesPerTenantOverrideWithGlobalFallback(t *testing.T) {
+	_, frontendClient, _ := setupSchedulerWithLimits(t, nil, &limits{
+		queriers: 2,
+		maxOutstandingRequests: map[string]int{
+			"tenant-a": 2,
+		},
+	})
+
+	frontendLoop := initFrontendLoop(t, frontendClient, "frontend-1")
+
+	for i := range 2 {
+		require.NoError(t, frontendLoop.Send(&schedulerpb.FrontendToScheduler{
+			Type:    schedulerpb.ENQUEUE,
+			QueryID: uint64(i),
+			UserID:  "tenant-a",
+			Payload: &schedulerpb.FrontendToScheduler_HttpRequest{HttpRequest: &httpgrpc.HTTPRequest{}},
+		}))
+
+		msg, err := frontendLoop.Recv()
+		require.NoError(t, err)
+		require.Equal(t, schedulerpb.OK, msg.Status)
+	}
+
+	require.NoError(t, frontendLoop.Send(&schedulerpb.FrontendToScheduler{
+		Type:    schedulerpb.ENQUEUE,
+		QueryID: 3,
+		UserID:  "tenant-a",
+		Payload: &schedulerpb.FrontendToScheduler_HttpRequest{HttpRequest: &httpgrpc.HTTPRequest{}},
+	}))
+	msg, err := frontendLoop.Recv()
+	require.NoError(t, err)
+	require.Equal(t, schedulerpb.TOO_MANY_REQUESTS_PER_TENANT, msg.Status)
+
+	for i := range testMaxOutstandingPerTenant {
+		require.NoError(t, frontendLoop.Send(&schedulerpb.FrontendToScheduler{
+			Type:    schedulerpb.ENQUEUE,
+			QueryID: uint64(10 + i),
+			UserID:  "tenant-b",
+			Payload: &schedulerpb.FrontendToScheduler_HttpRequest{HttpRequest: &httpgrpc.HTTPRequest{}},
+		}))
+
+		msg, err := frontendLoop.Recv()
+		require.NoError(t, err)
+		require.Equal(t, schedulerpb.OK, msg.Status)
+	}
+
+	require.NoError(t, frontendLoop.Send(&schedulerpb.FrontendToScheduler{
+		Type:    schedulerpb.ENQUEUE,
+		QueryID: 20,
+		UserID:  "tenant-b",
+		Payload: &schedulerpb.FrontendToScheduler_HttpRequest{HttpRequest: &httpgrpc.HTTPRequest{}},
+	}))
+	msg, err = frontendLoop.Recv()
+	require.NoError(t, err)
+	require.Equal(t, schedulerpb.TOO_MANY_REQUESTS_PER_TENANT, msg.Status)
+}
+
 func TestSchedulerForwardsErrorToFrontend(t *testing.T) {
 	scheduler, frontendClient, querierClient := setupScheduler(t, nil)
 
@@ -678,11 +739,20 @@ func verifyQueryComponentUtilizationLeft(t *testing.T, scheduler *Scheduler) {
 }
 
 type limits struct {
-	queriers int
+	queriers               int
+	maxOutstandingRequests map[string]int
 }
 
 func (l limits) MaxQueriersPerUser(_ string) int {
 	return l.queriers
+}
+
+func (l limits) MaxOutstandingRequestsPerUser(user string) int {
+	if l.maxOutstandingRequests == nil {
+		return 0
+	}
+
+	return l.maxOutstandingRequests[user]
 }
 
 type frontendMock struct {

@@ -5039,6 +5039,15 @@
         },
         {
           "kind": "field",
+          "name": "max_outstanding_requests_per_tenant",
+          "required": false,
+          "desc": "Maximum number of queued requests allowed per tenant in a single query-scheduler. If unset or set to 0, the query-scheduler uses its global -query-scheduler.max-outstanding-requests-per-tenant setting.",
+          "fieldValue": null,
+          "fieldDefaultValue": 0,
+          "fieldType": "int"
+        },
+        {
+          "kind": "field",
           "name": "query_sharding_total_shards",
           "required": false,
           "desc": "The amount of shards to use when doing parallelisation via query sharding by tenant. 0 to disable query sharding for tenant. Query sharding implementation will adjust the number of query shards based on compactor shards. This allows querier to not search the blocks which cannot possibly have the series for given query shard.",
@@ -15377,12 +15386,12 @@
             "User": null,
             "Host": "localhost:8080",
             "Path": "/alertmanager",
-            "RawPath": "",
-            "OmitHost": false,
-            "ForceQuery": false,
-            "RawQuery": "",
             "Fragment": "",
-            "RawFragment": ""
+            "RawQuery": "",
+            "RawPath": "",
+            "RawFragment": "",
+            "ForceQuery": false,
+            "OmitHost": false
           },
           "fieldFlag": "alertmanager.web.external-url",
           "fieldType": "url"

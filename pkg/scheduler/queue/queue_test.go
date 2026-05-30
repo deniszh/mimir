@@ -223,7 +223,7 @@ func queueProduce(
 	}
 	req := makeSchedulerRequest(tenantID, additionalQueueDimensions)
 	for {
-		err := queue.SubmitRequestToEnqueue(tenantID, req, maxQueriersPerTenant, func() {})
+		err := queue.SubmitRequestToEnqueue(tenantID, req, maxQueriersPerTenant, 0, func() {})
 		if err == nil {
 			break
 		}
@@ -395,13 +395,13 @@ func TestDispatchToWaitingDequeueRequestForUnregisteredQuerierWorker(t *testing.
 		HttpRequest:               &httpgrpc.HTTPRequest{Method: "GET", Url: "/hello"},
 		AdditionalQueueDimensions: []string{"ingester"},
 	}
-	assert.NoError(t, queue.SubmitRequestToEnqueue("user-2", reqNotShardedToQuerier1, 1, nil))
+	assert.NoError(t, queue.SubmitRequestToEnqueue("user-2", reqNotShardedToQuerier1, 1, 0, nil))
 	reqNotShardedToQuerier1 = &SchedulerRequest{
 		Ctx:                       context.Background(),
 		HttpRequest:               &httpgrpc.HTTPRequest{Method: "GET", Url: "/hello"},
 		AdditionalQueueDimensions: []string{"store-gateway"},
 	}
-	assert.NoError(t, queue.SubmitRequestToEnqueue("user-2", reqNotShardedToQuerier1, 1, nil))
+	assert.NoError(t, queue.SubmitRequestToEnqueue("user-2", reqNotShardedToQuerier1, 1, 0, nil))
 
 	// Querier-1 submits a request to dequeue;
 	// it will not receive anything as the only requests in the queue are not sharded to querier-1.
@@ -590,7 +590,7 @@ func TestRequestQueue_GetNextRequestForQuerier_ShouldGetRequestAfterReshardingBe
 		HttpRequest:               &httpgrpc.HTTPRequest{Method: "GET", Url: "/hello"},
 		AdditionalQueueDimensions: randAdditionalQueueDimension(""),
 	}
-	require.NoError(t, queue.SubmitRequestToEnqueue("user-1", req, 1, nil))
+	require.NoError(t, queue.SubmitRequestToEnqueue("user-1", req, 1, 0, nil))
 
 	startTime := time.Now()
 	done := make(chan struct{})
@@ -679,7 +679,7 @@ func TestRequestQueue_GetNextRequestForQuerier_ReshardNotifiedCorrectlyForMultip
 		HttpRequest:               &httpgrpc.HTTPRequest{Method: "GET", Url: "/hello"},
 		AdditionalQueueDimensions: randAdditionalQueueDimension(""),
 	}
-	require.NoError(t, queue.SubmitRequestToEnqueue("user-1", req, 2, nil))
+	require.NoError(t, queue.SubmitRequestToEnqueue("user-1", req, 2, 0, nil))
 
 	startTime := time.Now()
 	done := make(chan struct{})
@@ -824,7 +824,7 @@ func TestRequestQueue_tryDispatchRequestToQuerier_ShouldReEnqueueAfterFailedSend
 	multiAlgorithmTreeQueuePath = append(append(multiAlgorithmTreeQueuePath, queueDim...), "tenant-1")
 
 	require.Nil(t, qb.tree.GetNode(multiAlgorithmTreeQueuePath))
-	require.NoError(t, qb.enqueueRequestBack(&tr, tenantMaxQueriers))
+	require.NoError(t, qb.enqueueRequestBack(&tr, tenantMaxQueriers, 0))
 	require.False(t, qb.tree.GetNode(multiAlgorithmTreeQueuePath).IsEmpty())
 
 	ctx, cancel := context.WithCancel(context.Background())
